@@ -19,10 +19,83 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 _FINMIND_ASYNC_BROKEN = False
 
 
+def _yfinance_taiwan_batch(stock_ids, start_date, end_date):
+    """FinMind 額度不足時，以 Yahoo Finance 批次補台股 OHLCV。"""
+    import yfinance as yf
+
+    ids = [str(x).zfill(4) for x in stock_ids]
+    tickers = [f"{x}.TW" for x in ids] + [f"{x}.TWO" for x in ids]
+
+    raw = yf.download(
+        tickers=tickers,
+        start=start_date,
+        end=end_date,
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+        group_by="column",
+    )
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    frames = []
+    for stock_id in ids:
+        chosen = None
+        for ticker in (f"{stock_id}.TW", f"{stock_id}.TWO"):
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if ticker not in raw.columns.get_level_values(1):
+                        continue
+                    x = pd.DataFrame({
+                        "open": raw[("Open", ticker)],
+                        "max": raw[("High", ticker)],
+                        "min": raw[("Low", ticker)],
+                        "close": raw[("Close", ticker)],
+                        "Trading_Volume": raw[("Volume", ticker)],
+                    })
+                else:
+                    # 單一 ticker 的保險分支
+                    x = pd.DataFrame({
+                        "open": raw["Open"],
+                        "max": raw["High"],
+                        "min": raw["Low"],
+                        "close": raw["Close"],
+                        "Trading_Volume": raw["Volume"],
+                    })
+                x = x.dropna(subset=["close"])
+                if not x.empty:
+                    chosen = x.copy()
+                    break
+            except Exception:
+                continue
+
+        if chosen is None or chosen.empty:
+            continue
+
+        chosen = chosen.reset_index()
+        date_col = "Date" if "Date" in chosen.columns else chosen.columns[0]
+        chosen = chosen.rename(columns={date_col: "date"})
+        chosen["date"] = pd.to_datetime(chosen["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        chosen["stock_id"] = stock_id
+        chosen["Trading_money"] = (
+            pd.to_numeric(chosen["close"], errors="coerce")
+            * pd.to_numeric(chosen["Trading_Volume"], errors="coerce")
+        )
+        chosen["spread"] = pd.to_numeric(chosen["close"], errors="coerce").diff()
+        chosen["Trading_turnover"] = 0
+
+        frames.append(chosen[[
+            "date","stock_id","Trading_Volume","Trading_money",
+            "open","max","min","close","spread","Trading_turnover"
+        ]])
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def safe_finmind_batch(api, stock_ids, start_date, end_date):
     """
-    FinMind 2.x 在 GitHub Actions 偶爾會出現 async 進度完成但回傳空 DataFrame。
-    第一批先嘗試 async；若確認為空，後續批次自動改為同步逐檔抓取。
+    先用 FinMind async；若回傳空資料、額度不足或其他錯誤，
+    自動改用 Yahoo Finance 批次資料，不再逐檔消耗 FinMind 額度。
     """
     global _FINMIND_ASYNC_BROKEN
 
@@ -36,30 +109,20 @@ def safe_finmind_batch(api, stock_ids, start_date, end_date):
             )
             if df is not None and not df.empty:
                 return df
-            print("⚠️ FinMind async 回傳空資料，切換同步備援模式")
-            _FINMIND_ASYNC_BROKEN = True
-        except Exception as e:
-            print(f"⚠️ FinMind async 失敗，切換同步備援模式：{str(e)[:120]}")
+
+            print("⚠️ FinMind async 回傳空資料，切換 Yahoo Finance 備援")
             _FINMIND_ASYNC_BROKEN = True
 
-    frames = []
-    for stock_id in stock_ids:
-        try:
-            temp = api.taiwan_stock_daily(
-                stock_id=str(stock_id),
-                start_date=start_date,
-                end_date=end_date,
-                use_async=False,
-            )
-            if temp is not None and not temp.empty:
-                frames.append(temp)
         except Exception as e:
-            msg = str(e)
-            print(f"同步備援抓取 {stock_id} 失敗：{msg[:100]}")
-            if "402" in msg or "upper limit" in msg.lower() or "request limit" in msg.lower():
-                raise
+            print(f"⚠️ FinMind async 失敗，切換 Yahoo Finance 備援：{str(e)[:120]}")
+            _FINMIND_ASYNC_BROKEN = True
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    backup = _yfinance_taiwan_batch(stock_ids, start_date, end_date)
+    if backup is not None and not backup.empty:
+        print(f"✅ Yahoo Finance 備援成功：{backup['stock_id'].nunique()} 檔")
+        return backup
+
+    return pd.DataFrame()
 
 
 def sanitize_code(source: str) -> str:
