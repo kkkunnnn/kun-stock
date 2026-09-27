@@ -806,47 +806,11 @@ def main() -> None:
     excel_dst = DATA_DIR / excel_name
     history_dst = DATA_DIR / "history_latest.csv"
 
-    shutil.move(str(excel_src), str(excel_dst))
-    shutil.move(str(history_src), str(history_dst))
+    global_df = pd.DataFrame()
+    global_summary = pd.DataFrame()
+    domestic_summary = pd.DataFrame()
 
-    # V6：累積每日排名快照，作為日後回測與模型驗證的基礎
-    result = namespace.get("結果")
-    if isinstance(result, pd.DataFrame) and not result.empty:
-        snapshot_cols = [
-            "股票代號", "股票名稱", "市場", "產業別",
-            "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
-            "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
-            "收盤價", "V5綜合理由", "V5風險提示"
-        ]
-        snapshot_cols = [c for c in snapshot_cols if c in result.columns]
-
-        snapshot = result[snapshot_cols].copy()
-        snapshot.insert(0, "快照日期", latest_trade_date.strftime("%Y-%m-%d"))
-        snapshot["股票代號"] = (
-            snapshot["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
-        )
-
-        ranking_history_path = DATA_DIR / "ranking_history.csv"
-
-        if ranking_history_path.exists():
-            old = pd.read_csv(ranking_history_path, dtype={"股票代號": str})
-            combined = pd.concat([old, snapshot], ignore_index=True)
-        else:
-            combined = snapshot
-
-        combined["股票代號"] = (
-            combined["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
-        )
-        combined = (
-            combined
-            .drop_duplicates(["快照日期", "股票代號"], keep="last")
-            .sort_values(["快照日期", "排名"], ascending=[True, True])
-        )
-        combined.to_csv(ranking_history_path, index=False, encoding="utf-8-sig")
-        print(f"✅ 已累積 V6 排名歷史：{ranking_history_path.relative_to(ROOT)}")
-
-    print(f"✅ 已更新 {excel_dst.relative_to(ROOT)}")
-    # 全球市場 Gate：美股、半導體、波動、利率、匯率
+    # 全球市場 Gate
     try:
         global_df, global_summary = build_global_market_environment()
         if not global_df.empty:
@@ -858,8 +822,92 @@ def main() -> None:
             global_summary.to_csv(global_summary_path, index=False, encoding="utf-8-sig")
             print(f"✅ 已更新 {global_summary_path.relative_to(ROOT)}")
     except Exception as e:
-        print(f"⚠️ 全球市場 Gate 更新失敗，不影響主選股結果：{e}")
+        print(f"⚠️ 全球市場 Gate 更新失敗，先以中性環境處理：{e}")
 
+    # 台股市場 Gate
+    try:
+        domestic_summary = build_domestic_market_environment(
+            namespace.get("歷史資料", pd.DataFrame()),
+            global_df,
+        )
+        domestic_path = DATA_DIR / "domestic_market_summary.csv"
+        domestic_summary.to_csv(domestic_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新 {domestic_path.relative_to(ROOT)}")
+    except Exception as e:
+        print(f"⚠️ 台股市場 Gate 更新失敗，先以中性環境處理：{e}")
+        domestic_summary = pd.DataFrame([{
+            "台股環境分數": 50.0,
+            "台股環境判定": "資料不足",
+        }])
+
+    # V5-B：一週起漲模型 + 進場時機模型
+    result = namespace.get("結果")
+    weekly_result = pd.DataFrame()
+
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        weekly_result = build_one_week_model(
+            result,
+            namespace.get("歷史資料", pd.DataFrame()),
+            namespace.get("法人資料", pd.DataFrame()),
+            global_df,
+            global_summary,
+            domestic_summary,
+        )
+
+        weekly_path = DATA_DIR / "weekly_model_latest.csv"
+        weekly_result.to_csv(weekly_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新 {weekly_path.relative_to(ROOT)}")
+
+        top20_path = DATA_DIR / "weekly_top20.csv"
+        weekly_result.head(20).to_csv(top20_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新 {top20_path.relative_to(ROOT)}")
+
+    # 原 Notebook 輸出照常保留
+    shutil.move(str(excel_src), str(excel_dst))
+    shutil.move(str(history_src), str(history_dst))
+
+    # V6：同時保存原始 V5-A 與一週模型 V5-B
+    snapshot_source = weekly_result if not weekly_result.empty else result
+    if isinstance(snapshot_source, pd.DataFrame) and not snapshot_source.empty:
+        snapshot_cols = [
+            "股票代號", "股票名稱", "市場", "產業別",
+            "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
+            "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
+            "一週模型排名", "起漲潛力排名", "一週起漲分數", "進場時機分數",
+            "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
+            "風險扣分", "啟動階段", "進場判定",
+            "全球環境分數", "台股環境分數", "產業海外順風分數",
+            "收盤價", "V5綜合理由", "V5風險提示", "起漲原因", "進場風險"
+        ]
+        snapshot_cols = [c for c in snapshot_cols if c in snapshot_source.columns]
+
+        snapshot = snapshot_source[snapshot_cols].copy()
+        snapshot.insert(0, "快照日期", latest_trade_date.strftime("%Y-%m-%d"))
+        snapshot["股票代號"] = (
+            snapshot["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        )
+
+        ranking_history_path = DATA_DIR / "ranking_history.csv"
+
+        if ranking_history_path.exists():
+            old_history = pd.read_csv(ranking_history_path, dtype={"股票代號": str})
+            combined = pd.concat([old_history, snapshot], ignore_index=True)
+        else:
+            combined = snapshot
+
+        combined["股票代號"] = (
+            combined["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        )
+        sort_col = "一週模型排名" if "一週模型排名" in combined.columns else "排名"
+        combined = (
+            combined
+            .drop_duplicates(["快照日期", "股票代號"], keep="last")
+            .sort_values(["快照日期", sort_col], ascending=[True, True])
+        )
+        combined.to_csv(ranking_history_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已累積 V6 排名歷史：{ranking_history_path.relative_to(ROOT)}")
+
+    print(f"✅ 已更新 {excel_dst.relative_to(ROOT)}")
     print(f"✅ 已更新 {history_dst.relative_to(ROOT)}")
 
 
