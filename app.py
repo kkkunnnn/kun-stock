@@ -1075,6 +1075,41 @@ elif page == "個股分析":
             change_row = xchg.iloc[0]
 
     st.markdown(f"## {code}　{name}"); st.caption(f"{row.get('市場','—')} ｜ {row.get('產業別','—')} ｜ {row.get('財報類型','—')}")
+
+    if pd.notna(row.get("一週模型排名", np.nan)):
+        st.markdown("### 一週模型")
+        a,b,c,d=st.columns(4)
+        a.metric("一週模型排名",fmt(row.get("一週模型排名"),0))
+        b.metric("一週起漲分數",fmt(row.get("一週起漲分數"),1))
+        c.metric("進場時機分數",fmt(row.get("進場時機分數"),1))
+        d.metric("啟動階段",str(row.get("啟動階段","—")))
+
+        x1,x2,x3,x4=st.columns(4)
+        x1.metric("技術啟動",fmt(row.get("技術啟動分數"),0))
+        x2.metric("籌碼動能",fmt(row.get("籌碼動能分數"),0))
+        x3.metric("基本品質",fmt(row.get("基本品質分數"),0))
+        x4.metric("價格動能",fmt(row.get("價格動能分數"),0))
+
+        st.markdown(f"**進場判定：{row.get('進場判定','—')}**")
+        c1,c2=st.columns(2)
+        with c1:
+            st.info(f"起漲原因：{row.get('起漲原因','—')}")
+        with c2:
+            risk_text=str(row.get("進場風險","—"))
+            if risk_text=="無明顯風險訊號":
+                st.success(f"進場風險：{risk_text}")
+            else:
+                st.warning(f"進場風險：{risk_text}")
+
+        g1,g2,g3=st.columns(3)
+        g1.metric("台股環境",fmt(row.get("台股環境分數"),1))
+        g2.metric("全球環境",fmt(row.get("全球環境分數"),1))
+        g3.metric("產業海外順風",fmt(row.get("產業海外順風分數"),1))
+        st.caption("一週模型權重：技術啟動 40%｜籌碼動能 30%｜基本品質 15%｜價格動能 15%；風險與市場環境另外作 Gate。")
+    else:
+        st.info("這檔目前還沒有一週模型資料，請先跑一次 GitHub Actions。")
+
+    st.markdown("### 原始 V5-A")
     a,b,c,d,e=st.columns(5); a.metric("最終分數",fmt(row.get("最終分數"),2)); b.metric("綜合 PR",fmt(row.get("綜合PR"),1)); c.metric("收盤價",fmt(row.get("收盤價"),2)); d.metric("候選等級",str(row.get("候選等級","—"))); e.metric("目前狀態",str(row.get("目前狀態","—")))
     if change_row is not None:
         p1,p2,p3=st.columns(3)
