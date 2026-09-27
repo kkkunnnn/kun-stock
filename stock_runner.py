@@ -866,6 +866,34 @@ def main() -> None:
     shutil.move(str(excel_src), str(excel_dst))
     shutil.move(str(history_src), str(history_dst))
 
+    # 長期價格資料庫：history_latest 每天覆蓋，但 V6 回測需要永久保留後續價格
+    try:
+        latest_price = pd.read_csv(history_dst, dtype={"股票代號": str})
+        latest_price["股票代號"] = (
+            latest_price["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        )
+        price_archive_path = DATA_DIR / "price_history_archive.csv"
+
+        if price_archive_path.exists():
+            old_price = pd.read_csv(price_archive_path, dtype={"股票代號": str})
+            price_archive = pd.concat([old_price, latest_price], ignore_index=True)
+        else:
+            price_archive = latest_price
+
+        if "日期" in price_archive.columns:
+            price_archive["日期"] = pd.to_datetime(price_archive["日期"], errors="coerce")
+            price_archive = (
+                price_archive
+                .drop_duplicates(["股票代號", "日期"], keep="last")
+                .sort_values(["股票代號", "日期"])
+            )
+            price_archive["日期"] = price_archive["日期"].dt.strftime("%Y-%m-%d")
+
+        price_archive.to_csv(price_archive_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已累積長期價格資料：{price_archive_path.relative_to(ROOT)}")
+    except Exception as e:
+        print(f"⚠️ 長期價格資料累積失敗：{e}")
+
     # V6：同時保存原始 V5-A 與一週模型 V5-B
     snapshot_source = weekly_result if not weekly_result.empty else result
     if isinstance(snapshot_source, pd.DataFrame) and not snapshot_source.empty:
