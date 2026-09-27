@@ -155,7 +155,6 @@ def normalize(df):
 
 
 
-@st.cache_data(show_spinner=False)
 def load_weekly_model():
     p = DATA_DIR / "weekly_model_latest.csv"
     if not p.exists():
@@ -168,7 +167,6 @@ def load_weekly_model():
         return pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False)
 def load_domestic_market():
     p = DATA_DIR / "domestic_market_summary.csv"
     if not p.exists():
@@ -255,7 +253,7 @@ def load_history():
 
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_price_archive():
     p = DATA_DIR / "price_history_archive.csv"
     if not p.exists():
@@ -306,7 +304,6 @@ def history_macd_chart(d):
 
 
 
-@st.cache_data(show_spinner=False)
 def load_ranking_history():
     p = DATA_DIR / "ranking_history.csv"
     if not p.exists():
@@ -523,7 +520,6 @@ def bucket_chart(bucket_df, title):
 
 
 
-@st.cache_data(show_spinner=False)
 def load_global_market():
     detail_path = DATA_DIR / "global_market_latest.csv"
     summary_path = DATA_DIR / "global_market_summary.csv"
