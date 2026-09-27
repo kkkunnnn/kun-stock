@@ -1160,22 +1160,51 @@ elif page == "個股分析":
 
 elif page == "完整排名":
     st.markdown("## 完整排名")
-    a,b,c=st.columns(3); q=a.text_input("搜尋代號 / 名稱"); inds=sorted(rank["產業別"].dropna().astype(str).unique()) if "產業別" in rank.columns else []; ind=b.multiselect("產業",inds); states=sorted(rank["目前狀態"].dropna().astype(str).unique()) if "目前狀態" in rank.columns else []; state=c.multiselect("狀態",states)
+    a,b,c=st.columns(3)
+    q=a.text_input("搜尋代號 / 名稱")
+    inds=sorted(rank["產業別"].dropna().astype(str).unique()) if "產業別" in rank.columns else []
+    ind=b.multiselect("產業",inds)
+    entry_opts=sorted(rank["進場判定"].dropna().astype(str).unique()) if "進場判定" in rank.columns else []
+    entry_sel=c.multiselect("進場判定",entry_opts)
+
     d=rank.copy()
     if q:
         d=d[d["股票代號"].astype(str).str.contains(q,na=False)|d["股票名稱"].astype(str).str.contains(q,na=False)]
-    if ind: d=d[d["產業別"].isin(ind)]
-    if state: d=d[d["目前狀態"].isin(state)]
-    cols=[x for x in ["排名","股票代號","股票名稱","產業別","最終分數","綜合PR","候選等級","目前狀態","技術分數","籌碼標準分","基本面分數","風險動能分數","收盤價","V5風險提示"] if x in d.columns]
-    table(d[cols])
+    if ind:
+        d=d[d["產業別"].isin(ind)]
+    if entry_sel and "進場判定" in d.columns:
+        d=d[d["進場判定"].isin(entry_sel)]
+    if "一週模型排名" in d.columns:
+        d=d.sort_values("一週模型排名")
+
+    cols=[x for x in [
+        "一週模型排名","排名","股票代號","股票名稱","產業別",
+        "一週起漲分數","進場時機分數","啟動階段","進場判定",
+        "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
+        "風險扣分","最終分數","候選等級","目前狀態","收盤價"
+    ] if x in d.columns]
+    table(d[cols],height=620)
 
 elif page == "風險監控":
     st.markdown("## 風險監控")
-    statuses=["短線過熱","風險偏高","等待回檔","趨勢健康","整理觀察","一般觀察"]
-    sel=st.multiselect("狀態",statuses,default=["短線過熱","風險偏高","等待回檔"]); d=rank.copy()
-    if sel: d=d[d["目前狀態"].isin(sel)]
-    cols=[x for x in ["排名","股票代號","股票名稱","產業別","最終分數","目前狀態","風險動能分數","5日報酬率","20日報酬率","20日年化波動率","ATR百分比","20日最大回撤","MA20乖離率","V5風險提示"] if x in d.columns]
-    table(d[cols])
+    if "進場判定" in rank.columns:
+        options=sorted(rank["進場判定"].dropna().astype(str).unique())
+        defaults=[x for x in options if ("過熱" in x or "暫不" in x or "等待回檔" in x)]
+        sel=st.multiselect("一週模型進場狀態",options,default=defaults)
+        d=rank.copy()
+        if sel:
+            d=d[d["進場判定"].isin(sel)]
+        if "一週模型排名" in d.columns:
+            d=d.sort_values("一週模型排名")
+        cols=[x for x in [
+            "一週模型排名","股票代號","股票名稱","產業別",
+            "一週起漲分數","進場時機分數","啟動階段","進場判定",
+            "風險扣分","進場風險","ATR百分比","20日年化波動率",
+            "20日最大回撤","MA20乖離率","5日報酬率","20日報酬率"
+        ] if x in d.columns]
+        table(d[cols],height=600)
+    else:
+        st.info("一週模型尚未產生，請先跑一次 GitHub Actions。")
 
 else:
     st.markdown("## 產業分析")
