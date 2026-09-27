@@ -333,3 +333,165 @@ def summarize_optimizer(
 
     yearly = pd.DataFrame(yearly_rows).sort_values(["開發期排名", "年份"])
     return all_summary, shortlist, yearly
+
+
+def build_robustness_tables(
+    trades: pd.DataFrame,
+    split_date: str = "2025-01-01",
+    cost_scenarios: tuple[float, ...] = (0.30, 0.60, 1.00),
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Produce three robustness views:
+    1) Stop x holding-period sensitivity for simple hold/stop strategies.
+    2) Trailing activation x trailing-distance sensitivity for no-stop trailing strategies.
+    3) Trading-cost sensitivity for the development-period top strategies.
+
+    Strategy selection remains development-only. OOS is never used to rank parameters.
+    """
+    if trades is None or trades.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    d = trades.copy()
+    d["signal_date"] = pd.to_datetime(d["signal_date"], errors="coerce")
+    split = pd.Timestamp(split_date)
+    d["period"] = np.where(d["signal_date"] < split, "開發期", "OOS期")
+
+    # ---- 1) Stop x Hold sensitivity ----
+    simple_mask = (
+        d["trail_activate_pct"].isna()
+        & d["fixed_target_pct"].isna()
+    )
+    simple = d[simple_mask].copy()
+    simple["stop_label"] = np.where(
+        pd.to_numeric(simple["stop_pct"], errors="coerce").isna(),
+        "無停損",
+        (pd.to_numeric(simple["stop_pct"], errors="coerce") * 100).round(0).astype("Int64").astype(str) + "%"
+    )
+
+    stop_rows = []
+    for (period, stop_label, hold), g in simple.groupby(["period", "stop_label", "max_hold"], dropna=False):
+        m = _metric_row(g)
+        stop_rows.append({
+            "期間": period,
+            "停損": stop_label,
+            "最長持有日": int(hold),
+            **m,
+        })
+    stop_hold = pd.DataFrame(stop_rows)
+
+    # ---- 2) No-stop trailing sensitivity ----
+    trail = d[
+        d["stop_pct"].isna()
+        & d["trail_activate_pct"].notna()
+        & d["trail_pct"].notna()
+    ].copy()
+
+    trail_rows = []
+    for (period, activate, trail_pct, hold), g in trail.groupby(
+        ["period", "trail_activate_pct", "trail_pct", "max_hold"], dropna=False
+    ):
+        m = _metric_row(g)
+        trail_rows.append({
+            "期間": period,
+            "啟動門檻": float(activate) * 100,
+            "Trailing幅度": float(trail_pct) * 100,
+            "最長持有日": int(hold),
+            **m,
+        })
+    trailing = pd.DataFrame(trail_rows)
+
+    # ---- 3) Cost sensitivity for dev-selected top strategies ----
+    base_summary, shortlist, _ = summarize_optimizer(d, split_date=split_date)
+    if shortlist.empty:
+        return stop_hold, trailing, pd.DataFrame()
+
+    dev_top_ids = (
+        shortlist[shortlist["期間"].eq("開發期")]
+        .sort_values("開發期排名")
+        .head(5)["strategy_id"]
+        .tolist()
+    )
+
+    cost_rows = []
+    picked = d[d["strategy_id"].isin(dev_top_ids)].copy()
+    gross = pd.to_numeric(picked["gross_return_pct"], errors="coerce")
+
+    for cost in cost_scenarios:
+        scenario = picked.copy()
+        scenario["net_return_pct"] = gross - float(cost)
+        for period, p in scenario.groupby("period"):
+            for strategy_id, g in p.groupby("strategy_id"):
+                m = _metric_row(g)
+                dev_rank = shortlist.loc[
+                    (shortlist["strategy_id"].eq(strategy_id))
+                    & (shortlist["期間"].eq("開發期")),
+                    "開發期排名",
+                ]
+                cost_rows.append({
+                    "strategy_id": strategy_id,
+                    "開發期排名": float(dev_rank.iloc[0]) if len(dev_rank) else np.nan,
+                    "期間": period,
+                    "往返成本%": float(cost),
+                    **m,
+                })
+
+    cost_table = pd.DataFrame(cost_rows)
+    return stop_hold, trailing, cost_table
+
+
+def build_robustness_scorecard(
+    optimizer_summary: pd.DataFrame,
+    yearly: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    A descriptive robustness scorecard, not a new strategy-ranking engine.
+    It summarizes whether development-selected strategies survive OOS and multiple years.
+    """
+    if optimizer_summary is None or optimizer_summary.empty:
+        return pd.DataFrame()
+
+    dev = optimizer_summary[optimizer_summary["期間"].eq("開發期")].copy()
+    oos = optimizer_summary[optimizer_summary["期間"].eq("OOS期")].copy()
+    merged = dev.merge(
+        oos,
+        on=[
+            "strategy_id","max_hold","stop_pct","fixed_target_pct",
+            "trail_activate_pct","trail_pct","開發期綜合分數","開發期排名"
+        ],
+        suffixes=("_開發", "_OOS"),
+        how="inner",
+    )
+
+    rows = []
+    for _, r in merged.iterrows():
+        sid = r["strategy_id"]
+        yg = yearly[yearly["strategy_id"].eq(sid)].copy() if yearly is not None and not yearly.empty else pd.DataFrame()
+
+        positive_pf_years = 0
+        total_years = 0
+        if not yg.empty and "Profit Factor" in yg.columns:
+            pfy = pd.to_numeric(yg["Profit Factor"], errors="coerce").dropna()
+            total_years = int(len(pfy))
+            positive_pf_years = int((pfy > 1).sum())
+
+        pf_dev = pd.to_numeric(pd.Series([r.get("Profit Factor_開發")]), errors="coerce").iloc[0]
+        pf_oos = pd.to_numeric(pd.Series([r.get("Profit Factor_OOS")]), errors="coerce").iloc[0]
+        avg_dev = pd.to_numeric(pd.Series([r.get("平均淨報酬_開發")]), errors="coerce").iloc[0]
+        avg_oos = pd.to_numeric(pd.Series([r.get("平均淨報酬_OOS")]), errors="coerce").iloc[0]
+
+        rows.append({
+            "strategy_id": sid,
+            "開發期排名": r.get("開發期排名"),
+            "開發期PF": pf_dev,
+            "OOS PF": pf_oos,
+            "PF OOS/開發": (pf_oos / pf_dev) if pd.notna(pf_dev) and pf_dev > 0 and pd.notna(pf_oos) else np.nan,
+            "開發期平均淨報酬": avg_dev,
+            "OOS平均淨報酬": avg_oos,
+            "OOS報酬差": (avg_oos - avg_dev) if pd.notna(avg_oos) and pd.notna(avg_dev) else np.nan,
+            "PF>1年份數": positive_pf_years,
+            "年度樣本數": total_years,
+            "年度穩定率": (positive_pf_years / total_years * 100) if total_years else np.nan,
+            "OOS仍有效": bool(pd.notna(pf_oos) and pf_oos > 1 and pd.notna(avg_oos) and avg_oos > 0),
+        })
+
+    return pd.DataFrame(rows).sort_values(["開發期排名","strategy_id"])
