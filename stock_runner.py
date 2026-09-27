@@ -601,7 +601,7 @@ def build_historical_50_pattern_scores(history_df):
         }
 
     train = pd.concat(labeled_parts, ignore_index=True)
-    current = pd.DataFrame(current_rows)
+    current = pd.DataFrame(current_rows).reset_index(drop=True)
 
     for c in feature_cols:
         train[c] = pd.to_numeric(train[c], errors="coerce")
@@ -627,8 +627,13 @@ def build_historical_50_pattern_scores(history_df):
     k = min(250, max(80, int(len(train) ** 0.5 * 3)))
 
     rows = []
-    for idx, r in current.iterrows():
-        v = zcurrent.loc[idx].to_numpy(dtype=float)
+    zcurrent = zcurrent.reset_index(drop=True)
+    current = current.reset_index(drop=True)
+    for pos in range(len(current)):
+        r = current.iloc[pos]
+        v = zcurrent.iloc[pos].to_numpy(dtype=float)
+        if v.ndim != 1 or v.shape[0] != train_mat.shape[1]:
+            raise RuntimeError(f"50%型態特徵維度異常 current={v.shape} train={train_mat.shape}")
         dist = ((train_mat - v) ** 2).mean(axis=1) ** 0.5
         order = dist.argsort()[:k]
         dsel = dist[order]
