@@ -1011,9 +1011,22 @@ if page == "今日 Top 10":
                 )
 
         st.markdown("## 1～2 個月 50% 波段目標 Top 10")
-        st.caption("主排名目標是找出未來 1～2 個月具大波段爆發潛力的個股；主模型以波段爆發潛力為核心，再結合目前進場時機。50% 是篩選與回測目標，不是保證報酬。")
+        st.caption("主排名目標是找出未來 1～2 個月具大波段爆發潛力、且仍有操作意義的個股。首頁會排除『暫不考慮』與『短線過熱』；等待回檔 / 等待突破會直接顯示對應觀察價位。50% 是篩選與回測目標，不是保證報酬。")
 
-        top = rank.sort_values(["一週模型排名"]).head(10).copy()
+        # 首頁 Top 10 只放「仍具操作意義」的標的。
+        # 暫不考慮 / 短線過熱 不應佔用 Top10 名額。
+        eligible_labels = ["可觀察進場", "等待回檔", "等待突破"]
+        top_pool = rank.copy()
+        if "進場判定" in top_pool.columns:
+            entry_text = top_pool["進場判定"].astype(str)
+            mask = False
+            for label in eligible_labels:
+                mask = mask | entry_text.str.contains(label, na=False)
+            top_pool = top_pool[mask].copy()
+
+        sort_col = "主模型排名" if "主模型排名" in top_pool.columns else "一週模型排名"
+        top = top_pool.sort_values([sort_col]).head(10).copy()
+        top["首頁排名"] = range(1, len(top) + 1)
 
         for i in range(0,len(top),2):
             cc=st.columns(2)
@@ -1025,15 +1038,42 @@ if page == "今日 Top 10":
                 name=str(r.get("股票名稱",""))
                 stage=str(r.get("啟動階段","—"))
                 entry_label=str(r.get("進場判定","—"))
+
+                # 首頁直接給「等待回檔 / 等待突破」的具體價格區間。
+                card_hist = (
+                    history_all[history_all["股票代號"].eq(code)].copy()
+                    if (not history_all.empty and "股票代號" in history_all.columns)
+                    else pd.DataFrame()
+                )
+                card_plan = build_ai_trade_plan(card_hist, r) if not card_hist.empty else {}
+
+                if "等待回檔" in entry_label and card_plan:
+                    action_hint = (
+                        f'回檔觀察區：<b>{fmt(card_plan.get("觀察買入下緣"),2)}'
+                        f' ～ {fmt(card_plan.get("觀察買入上緣"),2)}</b>'
+                    )
+                elif "等待突破" in entry_label and card_plan:
+                    action_hint = (
+                        f'突破觀察價：<b>{fmt(card_plan.get("短期壓力"),2)}</b>'
+                    )
+                elif "可觀察進場" in entry_label and card_plan:
+                    action_hint = (
+                        f'觀察買入區：<b>{fmt(card_plan.get("觀察買入下緣"),2)}'
+                        f' ～ {fmt(card_plan.get("觀察買入上緣"),2)}</b>'
+                    )
+                else:
+                    action_hint = ""
+
                 with cc[j]:
                     st.markdown(
                         f'<div class="card">'
-                        f'<span class="rank">#{int(r.get("一週模型排名",k+1))}</span>'
+                        f'<span class="rank">#{int(r.get("首頁排名",k+1))}</span>'
                         f'<div class="title">{code}　{name}</div>'
                         f'<div class="muted">{r.get("產業別","—")} ｜ {stage}</div>'
                         f'<div class="muted">收盤價：<b>{fmt(r.get("收盤價"),2)}</b></div>'
                         f'<div class="score">{fmt(r.get("主模型分數"),2)}</div>'
                         f'<div class="muted">{r.get("50%潛力判定","—")} ｜ {entry_label}</div>'
+                        + (f'<div class="muted">{action_hint}</div>' if action_hint else '')
                         f'<div class="muted">波段爆發 {fmt(r.get("波段爆發分數"),1)} ｜ 進場時機 {fmt(r.get("進場時機分數"),1)}</div>'
                         f'<div class="muted">歷史50%型態PR {fmt(r.get("50%歷史型態PR"),0)} ｜ 相似型態命中率 {fmt(r.get("50%歷史型態命中率"),2,"%")}</div>'
                         f'<div class="muted">突破 {fmt(r.get("突破強度分數"),0)} ｜ 持續動能 {fmt(r.get("動能持續分數"),0)} ｜ 活躍爆發 {fmt(r.get("活躍爆發分數"),0)}</div>'
