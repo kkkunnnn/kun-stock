@@ -13,6 +13,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from model_validation import (
+    attach_professional_forward_metrics,
+    professional_validation_summary,
+    regime_validation,
+    validation_readiness,
+)
+
 APP_TITLE = "台股 V1～V5 選股"
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -970,7 +977,7 @@ st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基�
 if coverage < .95:
     st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
 
-pages = ["今日 Top 10","一週模型","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
+pages = ["今日 Top 10","專業驗證","一週模型","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
 page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
 
@@ -1124,6 +1131,92 @@ if page == "今日 Top 10":
         cols=[c for c in ["排名","股票代號","股票名稱","最終分數","候選等級","目前狀態"] if c in top.columns]
         table(top[cols],height=390)
 
+
+elif page == "專業驗證":
+    st.markdown("## 專業投資人驗證面板")
+    st.caption(
+        "這一頁只使用每天實際留下的模型快照，等未來價格真的發生後再驗證。"
+        "這是 forward / live OOS 驗證，不用今天的模型回頭改寫昨天的訊號。"
+    )
+
+    if ranking_history_all.empty or price_archive_all.empty:
+        st.info("目前還沒有足夠的排名歷史或長期價格資料。系統會每天自動累積。")
+    else:
+        pro_bt = attach_professional_forward_metrics(ranking_history_all, price_archive_all)
+        readiness = validation_readiness(pro_bt)
+
+        c1,c2,c3 = st.columns(3)
+        c1.metric("40日成熟樣本", readiness.get("成熟樣本數", 0))
+        c2.metric("成熟訊號日", readiness.get("成熟交易日數", 0))
+        c3.metric("驗證狀態", readiness.get("狀態", "—"))
+        st.caption(readiness.get("說明", ""))
+
+        summary = professional_validation_summary(pro_bt)
+        if summary.empty:
+            st.warning("目前還沒有 40 個交易日都走完的成熟樣本。先持續累積，不應過度解讀短期結果。")
+        else:
+            st.markdown("### Top-K 效果")
+            show = summary.copy()
+            for c in [
+                "40日+20%命中率","40日+30%命中率","40日+50%命中率",
+                "40日MFE中位數","40日MAE中位數","40日報酬中位數","40日正報酬率"
+            ]:
+                if c in show.columns:
+                    show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+            if "+50% Lift" in show.columns:
+                show["+50% Lift"] = pd.to_numeric(show["+50% Lift"], errors="coerce").round(2)
+            table(show, height=330)
+
+            top10_row = summary[summary["群組"].eq("Top 10")]
+            base_row = summary[summary["群組"].eq("全部股票池")]
+            if not top10_row.empty and not base_row.empty:
+                t = top10_row.iloc[0]
+                b = base_row.iloc[0]
+                a1,a2,a3,a4 = st.columns(4)
+                a1.metric("Top10 +50%命中", fmt(t.get("40日+50%命中率"),2,"%"))
+                a2.metric("市場基準 +50%", fmt(b.get("40日+50%命中率"),2,"%"))
+                a3.metric("Top10 Lift", fmt(t.get("+50% Lift"),2,"x"))
+                a4.metric("Top10 40日MFE中位數", fmt(t.get("40日MFE中位數"),2,"%"))
+
+                if pd.notna(t.get("+50% Lift")) and float(t.get("+50% Lift")) > 1:
+                    st.success("目前 Top10 的 +50% 命中率高於全部股票池基準。仍需確認樣本數與不同市場 regime 下是否穩定。")
+                else:
+                    st.warning("目前尚未證明 Top10 對 +50% 目標具有穩定 Lift；不要只看單一批次結果。")
+
+            st.markdown("### MFE / MAE")
+            st.caption(
+                "MFE = 訊號後最大有利變動；MAE = 訊號後最大不利變動。"
+                "專業版本用它檢查停損是否過緊、以及成功案例通常要承受多少逆向波動。"
+            )
+
+            mature = pro_bt[pro_bt.get("40日成熟", False) == True].copy()
+            cols = [c for c in [
+                "快照日期","股票代號","股票名稱","主模型排名","主模型分數","進場判定",
+                "40日MFE","40日MAE","40日後報酬率","40日達20%","40日達30%","40日達50%"
+            ] if c in mature.columns]
+            if cols:
+                table(
+                    mature.sort_values(["快照日期","主模型排名"], ascending=[False, True])[cols].head(200),
+                    height=430,
+                )
+
+            regimes = regime_validation(pro_bt)
+            st.markdown("### 市場 Regime 穩定度")
+            if regimes.empty:
+                st.caption("尚無足夠成熟樣本做台股 / 全球環境分組。")
+            else:
+                show_reg = regimes.copy()
+                for c in ["40日+50%命中率","40日MFE中位數","40日MAE中位數"]:
+                    if c in show_reg.columns:
+                        show_reg[c] = pd.to_numeric(show_reg[c], errors="coerce").round(2)
+                table(show_reg, height=360)
+
+        st.markdown("### 專業審查原則")
+        st.info(
+            "目前的 50% 歷史型態命中率是 historical analog 指標，不等於機率保證。"
+            "真正對外報告應以 forward OOS 的 Top5 / Top10 / Top20 命中率、Lift、MFE/MAE、"
+            "不同市場 regime 的穩定度與樣本數作主要證據。"
+        )
 
 elif page == "一週模型":
     st.markdown("## 1～2 個月波段爆發＋進場時機模型")
