@@ -153,6 +153,78 @@ def normalize(df):
 
 
 
+
+
+@st.cache_data(show_spinner=False)
+def load_weekly_model():
+    p = DATA_DIR / "weekly_model_latest.csv"
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        d = pd.read_csv(p, dtype={"股票代號": str})
+        d["股票代號"] = d["股票代號"].astype(str).str.replace(".0","",regex=False).str.zfill(4)
+        return d
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_domestic_market():
+    p = DATA_DIR / "domestic_market_summary.csv"
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(p)
+    except Exception:
+        return pd.DataFrame()
+
+
+def build_weekly_change(history_df):
+    if history_df.empty or "快照日期" not in history_df.columns:
+        return pd.DataFrame()
+
+    d = history_df.copy()
+    d["快照日期"] = pd.to_datetime(d["快照日期"], errors="coerce")
+    dates = sorted(d["快照日期"].dropna().dt.normalize().unique())
+    if len(dates) < 2:
+        return pd.DataFrame()
+
+    current_date, prev_date = dates[-1], dates[-2]
+    cur = d[d["快照日期"].dt.normalize().eq(current_date)].copy()
+    prev = d[d["快照日期"].dt.normalize().eq(prev_date)].copy()
+
+    keep_prev = [
+        "股票代號", "一週模型排名", "一週起漲分數",
+        "進場時機分數", "啟動階段", "進場判定"
+    ]
+    prev = prev[[c for c in keep_prev if c in prev.columns]].copy()
+    prev = prev.rename(columns={
+        "一週模型排名": "昨日一週排名",
+        "一週起漲分數": "昨日一週起漲分數",
+        "進場時機分數": "昨日進場時機分數",
+        "啟動階段": "昨日啟動階段",
+        "進場判定": "昨日進場判定",
+    })
+
+    out = cur.merge(prev, on="股票代號", how="left")
+
+    if "一週模型排名" in out.columns and "昨日一週排名" in out.columns:
+        out["一週排名變化"] = (
+            pd.to_numeric(out["昨日一週排名"], errors="coerce")
+            - pd.to_numeric(out["一週模型排名"], errors="coerce")
+        )
+        cur_rank = pd.to_numeric(out["一週模型排名"], errors="coerce")
+        prev_rank = pd.to_numeric(out["昨日一週排名"], errors="coerce")
+        out["新進一週Top10"] = (cur_rank <= 10) & (prev_rank.isna() | (prev_rank > 10))
+
+    if "進場判定" in out.columns:
+        cur_entry = out["進場判定"].astype(str)
+        prev_entry = out.get("昨日進場判定", pd.Series("", index=out.index)).astype(str)
+        out["新進可觀察進場"] = cur_entry.str.contains("可觀察進場", na=False) & ~prev_entry.str.contains("可觀察進場", na=False)
+
+    return out
+
+
 def latest_history_csv() -> Optional[Path]:
     files = list(DATA_DIR.glob("history_*.csv"))
     if not files:
@@ -541,6 +613,8 @@ css()
 sheets, source = load_data()
 history_all = load_history()
 ranking_history_all = load_ranking_history()
+weekly_model_all = load_weekly_model()
+domestic_market_summary = load_domestic_market()
 global_market_detail, global_market_summary = load_global_market()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
@@ -548,8 +622,27 @@ if not sheets:
 
 rank = normalize(sheets.get("全部排名", pd.DataFrame()))
 
+if not weekly_model_all.empty:
+    weekly_cols = [
+        c for c in [
+            "股票代號","一週模型排名","起漲潛力排名","一週起漲分數","進場時機分數",
+            "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
+            "風險扣分","啟動階段","進場判定","起漲原因","進場風險",
+            "全球環境分數","台股環境分數","產業海外順風分數",
+            "全球環境判定","台股環境判定"
+        ] if c in weekly_model_all.columns
+    ]
+    # Excel 主表保留原始 V5-A；一週模型欄位另外合併進來
+    rank = rank.merge(
+        weekly_model_all[weekly_cols].drop_duplicates("股票代號"),
+        on="股票代號",
+        how="left",
+    )
+
+
 previous_rank, previous_source = load_previous_rank(source)
 daily_change = build_daily_change(rank, previous_rank)
+weekly_daily_change = build_weekly_change(ranking_history_all)
 
 if rank.empty:
     st.error("Excel 找不到『全部排名』工作表。")
