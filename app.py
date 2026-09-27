@@ -653,7 +653,7 @@ def backtest_summary(bt):
     ]
 
     for label, d in groups:
-        for h in [1,5,20,40]
+        for h in [1,5,20,40]:
             col=f"{h}日後報酬率"
             if col not in d.columns:
                 continue
