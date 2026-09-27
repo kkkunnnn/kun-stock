@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
