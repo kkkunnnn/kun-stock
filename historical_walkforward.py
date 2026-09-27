@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from exit_optimizer import simulate_grid, summarize_optimizer
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -507,10 +509,25 @@ def main():
     exit_trades = run_exit_strategy_backtest(res, prices)
     exit_summary = summarize_exit_strategies(exit_trades)
 
+    optimizer_trades = simulate_grid(
+        res,
+        prices,
+        cost_pct=ROUND_TRIP_COST_PCT,
+        max_rank=10,
+    )
+    optimizer_summary, optimizer_shortlist, optimizer_yearly = summarize_optimizer(
+        optimizer_trades,
+        split_date="2025-01-01",
+    )
+
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
+    optimizer_trades.to_csv(DATA_DIR / "walkforward_exit_optimizer_trades.csv", index=False, encoding="utf-8-sig")
+    optimizer_summary.to_csv(DATA_DIR / "walkforward_exit_optimizer.csv", index=False, encoding="utf-8-sig")
+    optimizer_shortlist.to_csv(DATA_DIR / "walkforward_exit_optimizer_shortlist.csv", index=False, encoding="utf-8-sig")
+    optimizer_yearly.to_csv(DATA_DIR / "walkforward_exit_optimizer_yearly.csv", index=False, encoding="utf-8-sig")
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
@@ -525,6 +542,9 @@ def main():
         "出場回測交易摩擦假設": f"每筆往返合計 {ROUND_TRIP_COST_PCT:.2f}%",
         "出場回測進場": "訊號後下一交易日開盤",
         "同日停損與停利皆觸發": "保守假設停損先發生",
+        "Exit Optimizer版本": "EO-1.0",
+        "Exit Optimizer開發/OOS切點": "2025-01-01",
+        "Exit Optimizer原則": "只用開發期排名出場策略，OOS期只驗證不參與挑選",
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -533,6 +553,8 @@ def main():
     print(summary.to_string(index=False))
     print("\n✅ Exit strategy comparison")
     print(exit_summary.to_string(index=False))
+    print("\n✅ Exit Optimizer shortlist")
+    print(optimizer_shortlist.to_string(index=False))
 
 
 if __name__ == "__main__":
