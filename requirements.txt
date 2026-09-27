@@ -5,3 +5,4 @@ plotly>=5.20
 numpy>=1.26
 FinMind>=1.9.0
 requests>=2.31
+yfinance>=0.2.54
