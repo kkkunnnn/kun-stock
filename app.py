@@ -1065,7 +1065,7 @@ if page == "今日 Top 10":
                     action_hint = ""
 
                 with cc[j]:
-                    st.markdown(
+                    card_html = (
                         f'<div class="card">'
                         f'<span class="rank">#{int(r.get("首頁排名",k+1))}</span>'
                         f'<div class="title">{code}　{name}</div>'
@@ -1073,15 +1073,18 @@ if page == "今日 Top 10":
                         f'<div class="muted">收盤價：<b>{fmt(r.get("收盤價"),2)}</b></div>'
                         f'<div class="score">{fmt(r.get("主模型分數"),2)}</div>'
                         f'<div class="muted">{r.get("50%潛力判定","—")} ｜ {entry_label}</div>'
-                        + (f'<div class="muted">{action_hint}</div>' if action_hint else '')
+                    )
+                    if action_hint:
+                        card_html += f'<div class="muted">{action_hint}</div>'
+                    card_html += (
                         f'<div class="muted">波段爆發 {fmt(r.get("波段爆發分數"),1)} ｜ 進場時機 {fmt(r.get("進場時機分數"),1)}</div>'
                         f'<div class="muted">歷史50%型態PR {fmt(r.get("50%歷史型態PR"),0)} ｜ 相似型態命中率 {fmt(r.get("50%歷史型態命中率"),2,"%")}</div>'
                         f'<div class="muted">突破 {fmt(r.get("突破強度分數"),0)} ｜ 持續動能 {fmt(r.get("動能持續分數"),0)} ｜ 活躍爆發 {fmt(r.get("活躍爆發分數"),0)}</div>'
                         f'<div class="muted">技術啟動 {fmt(r.get("技術啟動分數"),0)} ｜ 籌碼動能 {fmt(r.get("籌碼動能分數"),0)} ｜ 基本品質 {fmt(r.get("基本品質分數"),0)} ｜ 價格動能 {fmt(r.get("價格動能分數"),0)}</div>'
                         f'<div class="muted">風險扣分 {fmt(r.get("風險扣分"),0)} ｜ 原始V5 {fmt(r.get("最終分數"),1)}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
+                        f'</div>'
                     )
+                    st.markdown(card_html, unsafe_allow_html=True)
                     st.button(
                         f"查看 {name} 詳細分析 →",
                         key=f"d_{code}",
