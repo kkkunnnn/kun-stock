@@ -87,6 +87,69 @@ def normalize(df):
     return d
 
 
+
+def latest_history_csv() -> Optional[Path]:
+    files = list(DATA_DIR.glob("history_*.csv"))
+    if not files:
+        p = DATA_DIR / "history_latest.csv"
+        return p if p.exists() else None
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+
+@st.cache_data(show_spinner=False)
+def read_history(path, mtime):
+    d = pd.read_csv(path, dtype={"股票代號": str})
+    if "股票代號" in d.columns:
+        d["股票代號"] = d["股票代號"].astype(str).str.replace(".0","",regex=False).str.zfill(4)
+    if "日期" in d.columns:
+        d["日期"] = pd.to_datetime(d["日期"], errors="coerce")
+    return d
+
+
+def load_history():
+    p = latest_history_csv()
+    if p is None:
+        return pd.DataFrame()
+    try:
+        return read_history(str(p), p.stat().st_mtime)
+    except Exception:
+        return pd.DataFrame()
+
+
+def history_price_chart(d):
+    f = go.Figure()
+    if "收盤價" in d.columns:
+        f.add_trace(go.Scatter(x=d["日期"], y=d["收盤價"], mode="lines", name="收盤價"))
+    for c, n in [("5日均線","MA5"),("20日均線","MA20"),("60日均線","MA60")]:
+        if c in d.columns:
+            f.add_trace(go.Scatter(x=d["日期"], y=d[c], mode="lines", name=n))
+    f.update_layout(height=420, margin=dict(l=15,r=15,t=35,b=15), title="近 120 日股價與均線", hovermode="x unified")
+    return f
+
+
+def history_rsi_chart(d):
+    f = go.Figure()
+    if "14日RSI" in d.columns:
+        f.add_trace(go.Scatter(x=d["日期"], y=d["14日RSI"], mode="lines", name="RSI14"))
+    f.add_hline(y=70, line_dash="dash")
+    f.add_hline(y=30, line_dash="dash")
+    f.update_yaxes(range=[0,100])
+    f.update_layout(height=280, margin=dict(l=15,r=15,t=35,b=15), title="RSI14", hovermode="x unified")
+    return f
+
+
+def history_macd_chart(d):
+    f = go.Figure()
+    if "MACD" in d.columns:
+        f.add_trace(go.Scatter(x=d["日期"], y=d["MACD"], mode="lines", name="MACD"))
+    if "MACD訊號線" in d.columns:
+        f.add_trace(go.Scatter(x=d["日期"], y=d["MACD訊號線"], mode="lines", name="Signal"))
+    if "MACD柱狀體" in d.columns:
+        f.add_trace(go.Bar(x=d["日期"], y=d["MACD柱狀體"], name="Histogram"))
+    f.update_layout(height=300, margin=dict(l=15,r=15,t=35,b=15), title="MACD", hovermode="x unified")
+    return f
+
+
 def base_date(sheets, filename):
     d = sheets.get("系統說明")
     if d is not None and not d.empty and {"項目","說明"}.issubset(d.columns):
@@ -169,6 +232,7 @@ def table(df, height=500):
 
 css()
 sheets, source = load_data()
+history_all = load_history()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -229,8 +293,17 @@ elif page == "個股分析":
         x=str(row.get("V5風險提示","—")); st.success(x) if x=="無明顯風險訊號" else st.warning(x)
     t1,t2,t3,t4=st.tabs(["技術面","法人籌碼","基本面","風險動能"])
     with t1:
-        f=ma_chart(row)
-        if f: st.plotly_chart(f,use_container_width=True)
+        hist = history_all[history_all["股票代號"].eq(code)].copy() if (not history_all.empty and "股票代號" in history_all.columns) else pd.DataFrame()
+        if not hist.empty and "日期" in hist.columns:
+            hist = hist.sort_values("日期").tail(120)
+            st.plotly_chart(history_price_chart(hist), use_container_width=True)
+            c1,c2=st.columns(2)
+            with c1: st.plotly_chart(history_rsi_chart(hist), use_container_width=True)
+            with c2: st.plotly_chart(history_macd_chart(hist), use_container_width=True)
+        else:
+            st.info("尚未放入歷史技術資料；目前先顯示當日快照。")
+            f=ma_chart(row)
+            if f: st.plotly_chart(f,use_container_width=True)
         a,b,c,d=st.columns(4); a.metric("RSI14",fmt(row.get("14日RSI"),1)); b.metric("量比",fmt(row.get("量比"),2)); c.metric("20日報酬",fmt(row.get("20日報酬率"),1,"%")); d.metric("60日報酬",fmt(row.get("60日報酬率"),1,"%"))
         st.caption(str(row.get("技術面原因","")))
     with t2:
