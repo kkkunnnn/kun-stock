@@ -12,7 +12,8 @@ DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 START_DATE = os.environ.get("WF_START_DATE", "2019-01-01")
-MODEL_VERSION = "P50-WF-1.0"
+MODEL_VERSION = "P50-WF-1.1"
+ROUND_TRIP_COST_PCT = float(os.environ.get("EXIT_COST_PCT", "0.60"))
 FEATURES = [
     "ret5", "ret20", "ret60", "rsi14", "vol_ratio",
     "atr_pct", "ma20_bias", "vol20_ann", "macd_hist",
@@ -255,6 +256,230 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
     return s
 
 
+
+
+def _trade_path(prices_map: dict, stock_id: str, signal_date: pd.Timestamp):
+    g = prices_map.get(str(stock_id))
+    if g is None or g.empty:
+        return None
+    pos = g.index[g["date"] > signal_date]
+    if len(pos) < 40:
+        return None
+    start = int(pos[0])
+    path = g.iloc[start:start+40].copy().reset_index(drop=True)
+    if len(path) < 40:
+        return None
+    return path
+
+
+def _simulate_exit(path: pd.DataFrame, strategy: str) -> dict:
+    """
+    Long-only execution simulation.
+    Entry = next trading day's open.
+    If stop and target are both touched on the same day, assume stop is hit first
+    (conservative because intraday sequence is unknown).
+    ROUND_TRIP_COST_PCT is subtracted from gross return as an explicit friction assumption.
+    """
+    entry = float(path.iloc[0]["open"])
+    if not np.isfinite(entry) or entry <= 0:
+        return {}
+
+    initial_stop_map = {
+        "HOLD40": None,
+        "SL8_TP50": 0.08,
+        "SL10_TP50": 0.10,
+        "SL12_TP50": 0.12,
+        "TP15_TRAIL8": 0.08,
+        "TP30_TRAIL10": 0.10,
+    }
+    stop_pct = initial_stop_map[strategy]
+    fixed_target = 0.50 if strategy in {"SL8_TP50","SL10_TP50","SL12_TP50"} else None
+    trail_activate = 0.15 if strategy == "TP15_TRAIL8" else (0.30 if strategy == "TP30_TRAIL10" else None)
+    trail_pct = 0.08 if strategy == "TP15_TRAIL8" else (0.10 if strategy == "TP30_TRAIL10" else None)
+
+    peak = entry
+    exit_price = float(path.iloc[-1]["close"])
+    exit_date = path.iloc[-1]["date"]
+    exit_reason = "40日到期"
+    exit_idx = len(path)-1
+
+    for i, row in path.iterrows():
+        o = float(row["open"])
+        h = float(row["high"])
+        l = float(row["low"])
+
+        if strategy == "HOLD40":
+            peak = max(peak, h)
+            continue
+
+        hard_stop = entry * (1 - stop_pct) if stop_pct is not None else None
+
+        # gap through initial stop
+        if hard_stop is not None and o <= hard_stop:
+            exit_price = o
+            exit_date = row["date"]
+            exit_reason = "跳空停損"
+            exit_idx = i
+            break
+
+        # conservative same-day assumption: hard stop before target
+        if hard_stop is not None and l <= hard_stop:
+            exit_price = hard_stop
+            exit_date = row["date"]
+            exit_reason = "停損"
+            exit_idx = i
+            break
+
+        if fixed_target is not None:
+            target = entry * (1 + fixed_target)
+            if o >= target:
+                exit_price = target
+                exit_date = row["date"]
+                exit_reason = "+50%停利"
+                exit_idx = i
+                break
+            if h >= target:
+                exit_price = target
+                exit_date = row["date"]
+                exit_reason = "+50%停利"
+                exit_idx = i
+                break
+
+        old_peak = peak
+        peak = max(peak, h)
+
+        if trail_activate is not None and peak >= entry * (1 + trail_activate):
+            trail_stop = peak * (1 - trail_pct)
+
+            # if the day's high newly activates trailing and low also breaches it,
+            # assume the adverse sequence for robustness.
+            if o <= trail_stop:
+                exit_price = o
+                exit_date = row["date"]
+                exit_reason = "移動停利跳空"
+                exit_idx = i
+                break
+            if l <= trail_stop:
+                exit_price = trail_stop
+                exit_date = row["date"]
+                exit_reason = "移動停利"
+                exit_idx = i
+                break
+
+    held = path.iloc[:exit_idx+1]
+    max_high = pd.to_numeric(held["high"], errors="coerce").max()
+    min_low = pd.to_numeric(held["low"], errors="coerce").min()
+    mfe = (max_high / entry - 1) * 100 if pd.notna(max_high) else np.nan
+    mae = (min_low / entry - 1) * 100 if pd.notna(min_low) else np.nan
+    gross = (exit_price / entry - 1) * 100
+    net = gross - ROUND_TRIP_COST_PCT
+
+    return {
+        "entry_date": path.iloc[0]["date"],
+        "entry_price": entry,
+        "exit_date": exit_date,
+        "exit_price": exit_price,
+        "exit_reason": exit_reason,
+        "holding_days": int(exit_idx + 1),
+        "gross_return_pct": gross,
+        "net_return_pct": net,
+        "mfe_during_trade": mfe,
+        "mae_during_trade": mae,
+    }
+
+
+def run_exit_strategy_backtest(results: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
+    if results.empty or prices.empty:
+        return pd.DataFrame()
+
+    p = prices.copy()
+    p["date"] = pd.to_datetime(p["date"], errors="coerce")
+    p = p.sort_values(["stock_id","date"])
+    prices_map = {
+        str(code): g[["date","open","high","low","close"]].reset_index(drop=True)
+        for code, g in p.groupby("stock_id")
+    }
+
+    signals = results[
+        pd.to_numeric(results["rank"], errors="coerce") <= 20
+    ].copy()
+
+    strategies = [
+        "HOLD40",
+        "SL8_TP50",
+        "SL10_TP50",
+        "SL12_TP50",
+        "TP15_TRAIL8",
+        "TP30_TRAIL10",
+    ]
+
+    rows = []
+    for _, sig in signals.iterrows():
+        signal_date = pd.to_datetime(sig["date"], errors="coerce")
+        stock_id = str(sig["stock_id"])
+        if pd.isna(signal_date):
+            continue
+        path = _trade_path(prices_map, stock_id, signal_date)
+        if path is None:
+            continue
+
+        for strategy in strategies:
+            sim = _simulate_exit(path, strategy)
+            if not sim:
+                continue
+            rows.append({
+                "signal_date": signal_date,
+                "stock_id": stock_id,
+                "rank": sig.get("rank"),
+                "score_hit50": sig.get("score_hit50"),
+                "strategy": strategy,
+                **sim,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def summarize_exit_strategies(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for max_rank, group_label in [(5,"Top 5"),(10,"Top 10"),(20,"Top 20")]:
+        d0 = trades[pd.to_numeric(trades["rank"], errors="coerce") <= max_rank].copy()
+        for strategy, d in d0.groupby("strategy"):
+            x = pd.to_numeric(d["net_return_pct"], errors="coerce").dropna()
+            if x.empty:
+                continue
+            wins = x[x > 0].sum()
+            losses = -x[x < 0].sum()
+            pf = wins / losses if losses > 0 else np.nan
+            mfe = pd.to_numeric(d["mfe_during_trade"], errors="coerce")
+            capture = np.where(
+                mfe > 0,
+                pd.to_numeric(d["net_return_pct"], errors="coerce") / mfe * 100,
+                np.nan,
+            )
+
+            rows.append({
+                "群組": group_label,
+                "策略": strategy,
+                "交易數": int(len(d)),
+                "平均淨報酬": float(x.mean()),
+                "中位數淨報酬": float(x.median()),
+                "勝率": float((x > 0).mean() * 100),
+                "Profit Factor": float(pf) if pd.notna(pf) else np.nan,
+                "中位持有天數": float(pd.to_numeric(d["holding_days"], errors="coerce").median()),
+                "最大單筆虧損": float(x.min()),
+                "10分位淨報酬": float(x.quantile(0.10)),
+                "+20%實現率": float((x >= 20).mean() * 100),
+                "+30%實現率": float((x >= 30).mean() * 100),
+                "+50%實現率": float((x >= 50).mean() * 100),
+                "MFE捕捉率中位數": float(pd.Series(capture).replace([np.inf,-np.inf],np.nan).median()),
+            })
+
+    return pd.DataFrame(rows)
+
+
 def main():
     ids = load_universe()
     print(f"股票池：{len(ids)} 檔")
@@ -279,8 +504,13 @@ def main():
     res = pd.concat(results, ignore_index=True)
     summary = summarize(res)
 
+    exit_trades = run_exit_strategy_backtest(res, prices)
+    exit_summary = summarize_exit_strategies(exit_trades)
+
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
+    exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
+    exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
@@ -292,12 +522,17 @@ def main():
         "K": 250,
         "測試截面數": res["date"].nunique(),
         "成熟測試樣本": int(res["hit50"].notna().sum()),
+        "出場回測交易摩擦假設": f"每筆往返合計 {ROUND_TRIP_COST_PCT:.2f}%",
+        "出場回測進場": "訊號後下一交易日開盤",
+        "同日停損與停利皆觸發": "保守假設停損先發生",
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
 
     print("✅ Walk-forward 完成")
     print(summary.to_string(index=False))
+    print("\n✅ Exit strategy comparison")
+    print(exit_summary.to_string(index=False))
 
 
 if __name__ == "__main__":
