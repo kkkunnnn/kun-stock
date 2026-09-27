@@ -891,9 +891,45 @@ def load_walkforward_validation():
     except Exception:
         optimizer_yearly = pd.DataFrame()
 
+    robustness_stop_hold_path = DATA_DIR / "walkforward_robustness_stop_hold.csv"
+    robustness_trailing_path = DATA_DIR / "walkforward_robustness_trailing.csv"
+    robustness_cost_path = DATA_DIR / "walkforward_robustness_cost.csv"
+    robustness_scorecard_path = DATA_DIR / "walkforward_robustness_scorecard.csv"
+
+    robustness_stop_hold = pd.DataFrame()
+    robustness_trailing = pd.DataFrame()
+    robustness_cost = pd.DataFrame()
+    robustness_scorecard = pd.DataFrame()
+
+    try:
+        if robustness_stop_hold_path.exists():
+            robustness_stop_hold = pd.read_csv(robustness_stop_hold_path)
+    except Exception:
+        robustness_stop_hold = pd.DataFrame()
+
+    try:
+        if robustness_trailing_path.exists():
+            robustness_trailing = pd.read_csv(robustness_trailing_path)
+    except Exception:
+        robustness_trailing = pd.DataFrame()
+
+    try:
+        if robustness_cost_path.exists():
+            robustness_cost = pd.read_csv(robustness_cost_path)
+    except Exception:
+        robustness_cost = pd.DataFrame()
+
+    try:
+        if robustness_scorecard_path.exists():
+            robustness_scorecard = pd.read_csv(robustness_scorecard_path)
+    except Exception:
+        robustness_scorecard = pd.DataFrame()
+
     return (
         summary, metadata, results, exit_summary, exit_trades,
-        optimizer, optimizer_shortlist, optimizer_yearly
+        optimizer, optimizer_shortlist, optimizer_yearly,
+        robustness_stop_hold, robustness_trailing,
+        robustness_cost, robustness_scorecard
     )
 
 
@@ -1024,6 +1060,10 @@ global_market_detail, global_market_summary = load_global_market()
     walkforward_exit_optimizer,
     walkforward_exit_optimizer_shortlist,
     walkforward_exit_optimizer_yearly,
+    walkforward_robustness_stop_hold,
+    walkforward_robustness_trailing,
+    walkforward_robustness_cost,
+    walkforward_robustness_scorecard,
 ) = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
@@ -1503,6 +1543,172 @@ elif page == "專業驗證":
                 "Exit Optimizer 仍屬研究工具。現階段的目標是找『參數區域是否穩健』，"
                 "不是只挑某一組數字最高。下一步還要做參數敏感度熱圖與不同交易成本情境。"
             )
+
+
+        st.markdown("### Robustness / 參數穩健性")
+        st.caption(
+            "專業研究不是找單一最佳參數，而是確認附近參數、不同成本與不同年份是否仍保有 edge。"
+            "這裡只做描述性穩健性檢查，不會用 OOS 結果重新挑策略。"
+        )
+
+        if walkforward_robustness_scorecard.empty:
+            st.info(
+                "尚未產生 Robustness 結果。請重新執行一次 Historical Walk-Forward Validation。"
+            )
+        else:
+            scorecard = walkforward_robustness_scorecard.copy()
+            sc_cols = [c for c in [
+                "開發期排名","strategy_id","開發期PF","OOS PF","PF OOS/開發",
+                "開發期平均淨報酬","OOS平均淨報酬","OOS報酬差",
+                "PF>1年份數","年度樣本數","年度穩定率","OOS仍有效"
+            ] if c in scorecard.columns]
+            for c in [
+                "開發期PF","OOS PF","PF OOS/開發","開發期平均淨報酬",
+                "OOS平均淨報酬","OOS報酬差","年度穩定率"
+            ]:
+                if c in scorecard.columns:
+                    scorecard[c] = pd.to_numeric(scorecard[c], errors="coerce").round(2)
+            table(
+                scorecard.sort_values("開發期排名")[sc_cols].head(20),
+                height=430,
+            )
+
+            top1 = scorecard[pd.to_numeric(scorecard.get("開發期排名"), errors="coerce") == 1]
+            if not top1.empty:
+                r = top1.iloc[0]
+                q1,q2,q3,q4 = st.columns(4)
+                q1.metric("基準策略", str(r.get("strategy_id","—")))
+                q2.metric("OOS PF", fmt(r.get("OOS PF"),2))
+                q3.metric("年度穩定率", fmt(r.get("年度穩定率"),1,"%"))
+                q4.metric("OOS仍有效", "是" if bool(r.get("OOS仍有效")) else "否")
+
+        st.markdown("#### 停損 × 最長持有日")
+        if walkforward_robustness_stop_hold.empty:
+            st.caption("尚無停損 / 持有期敏感度資料。")
+        else:
+            sh = walkforward_robustness_stop_hold.copy()
+            period = st.radio(
+                "查看期間",
+                ["開發期","OOS期"],
+                horizontal=True,
+                key="robust_stop_period",
+            )
+            sh = sh[sh["期間"].eq(period)].copy()
+
+            metric = st.selectbox(
+                "熱圖指標",
+                ["Profit Factor","平均淨報酬","10分位淨報酬","毛+50%實現率"],
+                key="robust_stop_metric",
+            )
+            if not sh.empty and metric in sh.columns:
+                pivot = sh.pivot_table(
+                    index="停損",
+                    columns="最長持有日",
+                    values=metric,
+                    aggfunc="mean",
+                )
+                fig = go.Figure(
+                    data=go.Heatmap(
+                        z=pivot.values,
+                        x=[str(x) for x in pivot.columns],
+                        y=[str(y) for y in pivot.index],
+                        text=np.round(pivot.values,2),
+                        texttemplate="%{text}",
+                        colorbar=dict(title=metric),
+                    )
+                )
+                fig.update_layout(
+                    height=360,
+                    xaxis_title="最長持有交易日",
+                    yaxis_title="停損",
+                    margin=dict(l=20,r=20,t=25,b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### Trailing 參數敏感度")
+        if walkforward_robustness_trailing.empty:
+            st.caption("尚無 trailing 敏感度資料。")
+        else:
+            tr = walkforward_robustness_trailing.copy()
+            tr_period = st.radio(
+                "Trailing 查看期間",
+                ["開發期","OOS期"],
+                horizontal=True,
+                key="robust_trail_period",
+            )
+            tr_hold = st.selectbox(
+                "最長持有日",
+                sorted(pd.to_numeric(tr["最長持有日"], errors="coerce").dropna().astype(int).unique()),
+                key="robust_trail_hold",
+            )
+            tr_metric = st.selectbox(
+                "Trailing 熱圖指標",
+                ["Profit Factor","平均淨報酬","10分位淨報酬","毛+50%實現率"],
+                key="robust_trail_metric",
+            )
+            tr = tr[
+                tr["期間"].eq(tr_period)
+                & (pd.to_numeric(tr["最長持有日"], errors="coerce") == int(tr_hold))
+            ].copy()
+            if not tr.empty and tr_metric in tr.columns:
+                pivot = tr.pivot_table(
+                    index="啟動門檻",
+                    columns="Trailing幅度",
+                    values=tr_metric,
+                    aggfunc="mean",
+                )
+                fig = go.Figure(
+                    data=go.Heatmap(
+                        z=pivot.values,
+                        x=[f"{x:.0f}%" for x in pivot.columns],
+                        y=[f"{y:.0f}%" for y in pivot.index],
+                        text=np.round(pivot.values,2),
+                        texttemplate="%{text}",
+                        colorbar=dict(title=tr_metric),
+                    )
+                )
+                fig.update_layout(
+                    height=350,
+                    xaxis_title="Trailing 幅度",
+                    yaxis_title="啟動門檻",
+                    margin=dict(l=20,r=20,t=25,b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### 交易成本敏感度")
+        if walkforward_robustness_cost.empty:
+            st.caption("尚無成本敏感度資料。")
+        else:
+            cost = walkforward_robustness_cost.copy()
+            cost = cost[
+                pd.to_numeric(cost.get("開發期排名"), errors="coerce") <= 5
+            ].copy()
+            cost_cols = [c for c in [
+                "開發期排名","strategy_id","期間","往返成本%",
+                "平均淨報酬","中位數淨報酬","勝率","Profit Factor","10分位淨報酬"
+            ] if c in cost.columns]
+            for c in [
+                "平均淨報酬","中位數淨報酬","勝率","Profit Factor","10分位淨報酬"
+            ]:
+                if c in cost.columns:
+                    cost[c] = pd.to_numeric(cost[c], errors="coerce").round(2)
+            table(
+                cost.sort_values(["開發期排名","strategy_id","期間","往返成本%"])[cost_cols],
+                height=480,
+            )
+
+        if not walkforward_metadata.empty:
+            md = walkforward_metadata.iloc[0]
+            st.caption(
+                f"Robustness：{md.get('Robustness版本','—')} ｜ "
+                f"成本情境：{md.get('成本敏感度情境','—')} ｜ "
+                f"檢查內容：{md.get('參數穩健性','—')}"
+            )
+
+        st.warning(
+            "看到一個參數點特別高，不代表它可靠。真正值得保留的是："
+            "附近參數也有效、成本提高後仍有效、OOS 不崩壞、且多個年份 PF 仍大於 1。"
+        )
 
 elif page == "一週模型":
     st.markdown("## 1～2 個月波段爆發＋進場時機模型")
