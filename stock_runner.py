@@ -11,6 +11,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+MODEL_VERSION = "P50-1.0"
+MODEL_TARGET = "40交易日內最高報酬達+50%"
 NOTEBOOK_PATH = ROOT / "股市V1-V5.ipynb"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1352,6 +1354,23 @@ def main() -> None:
               f"命中 {pattern_stats.get('50%命中樣本數',0)}，"
               f"基準率 {pattern_stats.get('50%基準命中率',float('nan'))}%")
 
+        metadata = pd.DataFrame([{
+            "模型版本": MODEL_VERSION,
+            "模型目標": MODEL_TARGET,
+            "資料基準日": latest_trade_date.strftime("%Y-%m-%d"),
+            "歷史視窗日數": 420,
+            "歷史樣本數": pattern_stats.get("歷史樣本數", 0),
+            "50%命中樣本數": pattern_stats.get("50%命中樣本數", 0),
+            "50%歷史基準率": pattern_stats.get("50%基準命中率", float("nan")),
+            "特徵數": pattern_stats.get("特徵數", float("nan")),
+            "鄰近樣本K": pattern_stats.get("鄰近樣本K", float("nan")),
+            "股票池檔數": len(result) if isinstance(result, pd.DataFrame) else 0,
+            "GitHub_SHA": os.environ.get("GITHUB_SHA", ""),
+            "產生時間": pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S"),
+        }])
+        metadata.to_csv(DATA_DIR / "model_metadata.csv", index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新模型 metadata：{MODEL_VERSION}")
+
     if isinstance(result, pd.DataFrame) and not result.empty:
         weekly_result = build_one_week_model(
             result,
@@ -1437,6 +1456,7 @@ def main() -> None:
 
         snapshot = snapshot_source[snapshot_cols].copy()
         snapshot.insert(0, "快照日期", latest_trade_date.strftime("%Y-%m-%d"))
+        snapshot.insert(1, "模型版本", MODEL_VERSION)
         snapshot["股票代號"] = (
             snapshot["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
         )
