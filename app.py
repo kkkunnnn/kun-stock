@@ -865,7 +865,36 @@ def load_walkforward_validation():
     except Exception:
         exit_trades = pd.DataFrame()
 
-    return summary, metadata, results, exit_summary, exit_trades
+    optimizer_path = DATA_DIR / "walkforward_exit_optimizer.csv"
+    optimizer_shortlist_path = DATA_DIR / "walkforward_exit_optimizer_shortlist.csv"
+    optimizer_yearly_path = DATA_DIR / "walkforward_exit_optimizer_yearly.csv"
+
+    optimizer = pd.DataFrame()
+    optimizer_shortlist = pd.DataFrame()
+    optimizer_yearly = pd.DataFrame()
+
+    try:
+        if optimizer_path.exists():
+            optimizer = pd.read_csv(optimizer_path)
+    except Exception:
+        optimizer = pd.DataFrame()
+
+    try:
+        if optimizer_shortlist_path.exists():
+            optimizer_shortlist = pd.read_csv(optimizer_shortlist_path)
+    except Exception:
+        optimizer_shortlist = pd.DataFrame()
+
+    try:
+        if optimizer_yearly_path.exists():
+            optimizer_yearly = pd.read_csv(optimizer_yearly_path)
+    except Exception:
+        optimizer_yearly = pd.DataFrame()
+
+    return (
+        summary, metadata, results, exit_summary, exit_trades,
+        optimizer, optimizer_shortlist, optimizer_yearly
+    )
 
 
 def load_global_market():
@@ -986,7 +1015,16 @@ ranking_history_all = load_ranking_history()
 weekly_model_all = load_weekly_model()
 domestic_market_summary = load_domestic_market()
 global_market_detail, global_market_summary = load_global_market()
-walkforward_summary, walkforward_metadata, walkforward_results, walkforward_exit_summary, walkforward_exit_trades = load_walkforward_validation()
+(
+    walkforward_summary,
+    walkforward_metadata,
+    walkforward_results,
+    walkforward_exit_summary,
+    walkforward_exit_trades,
+    walkforward_exit_optimizer,
+    walkforward_exit_optimizer_shortlist,
+    walkforward_exit_optimizer_yearly,
+) = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -1363,6 +1401,107 @@ elif page == "專業驗證":
             st.warning(
                 "這裡的『目前較佳策略』只代表這批 walk-forward 歷史樣本中的相對結果，"
                 "不能直接當成未來保證。專業版本後續還要做不同年代 / regime、參數敏感度與成本敏感度測試。"
+            )
+
+
+        st.markdown("### Exit Optimization 2.0")
+        st.caption(
+            "這一層不再只比較少數人工規則，而是系統化測試停損、持有天數、"
+            "啟動移動停利門檻與 trailing distance。最重要的是："
+            "策略排名只看 2025 年以前的開發期，2025 年以後只當 OOS 驗證，不參與挑選。"
+        )
+
+        if walkforward_exit_optimizer_shortlist.empty:
+            st.info(
+                "尚未產生 Exit Optimization 2.0 結果。請重新執行一次 "
+                "Historical Walk-Forward Validation。"
+            )
+        else:
+            opt = walkforward_exit_optimizer_shortlist.copy()
+
+            display_cols = [c for c in [
+                "開發期排名","strategy_id","期間","交易數","平均淨報酬","中位數淨報酬",
+                "勝率","Profit Factor","10分位淨報酬","最大單筆虧損",
+                "毛+30%實現率","毛+50%實現率","淨+30%實現率","淨+50%實現率",
+                "中位持有天數","開發期綜合分數"
+            ] if c in opt.columns]
+
+            show_opt = opt[display_cols].copy()
+            for c in [
+                "平均淨報酬","中位數淨報酬","勝率","Profit Factor",
+                "10分位淨報酬","最大單筆虧損","毛+30%實現率","毛+50%實現率",
+                "淨+30%實現率","淨+50%實現率","中位持有天數","開發期綜合分數"
+            ]:
+                if c in show_opt.columns:
+                    show_opt[c] = pd.to_numeric(show_opt[c], errors="coerce").round(2)
+
+            table(show_opt.sort_values(["開發期排名","期間"]), height=520)
+
+            # The first-ranked development strategy is frozen before reading OOS.
+            dev_top = opt[
+                (pd.to_numeric(opt.get("開發期排名"), errors="coerce") == 1)
+            ].copy()
+
+            if not dev_top.empty:
+                dev_row = dev_top[dev_top["期間"].eq("開發期")]
+                oos_row = dev_top[dev_top["期間"].eq("OOS期")]
+
+                st.markdown("#### 開發期第 1 名策略：OOS 驗證")
+                if not dev_row.empty:
+                    d = dev_row.iloc[0]
+                    strategy_name = str(d.get("strategy_id","—"))
+                    c1,c2,c3,c4 = st.columns(4)
+                    c1.metric("策略", strategy_name)
+                    c2.metric("開發期 PF", fmt(d.get("Profit Factor"),2))
+                    c3.metric("開發期平均淨報酬", fmt(d.get("平均淨報酬"),2,"%"))
+                    c4.metric("開發期10%尾端", fmt(d.get("10分位淨報酬"),2,"%"))
+
+                if not oos_row.empty:
+                    o = oos_row.iloc[0]
+                    c1,c2,c3,c4 = st.columns(4)
+                    c1.metric("OOS Profit Factor", fmt(o.get("Profit Factor"),2))
+                    c2.metric("OOS 平均淨報酬", fmt(o.get("平均淨報酬"),2,"%"))
+                    c3.metric("OOS 中位數", fmt(o.get("中位數淨報酬"),2,"%"))
+                    c4.metric("OOS 勝率", fmt(o.get("勝率"),1,"%"))
+
+                    dev_pf = pd.to_numeric(pd.Series([d.get("Profit Factor")]), errors="coerce").iloc[0] if not dev_row.empty else np.nan
+                    oos_pf = pd.to_numeric(pd.Series([o.get("Profit Factor")]), errors="coerce").iloc[0]
+                    if pd.notna(oos_pf) and oos_pf > 1:
+                        st.success(
+                            "開發期選出的策略在 OOS 仍維持 Profit Factor > 1。"
+                            "這比直接用全樣本挑最佳參數更有可信度。"
+                        )
+                    else:
+                        st.warning(
+                            "開發期第 1 名策略在 OOS 未維持有效 edge。"
+                            "這種情況不能把開發期最佳參數直接接到實盤。"
+                        )
+
+            st.markdown("#### 年度穩定度")
+            if walkforward_exit_optimizer_yearly.empty:
+                st.caption("尚無年度穩定度資料。")
+            else:
+                yr = walkforward_exit_optimizer_yearly.copy()
+                yr = yr[pd.to_numeric(yr.get("開發期排名"), errors="coerce") <= 5].copy()
+                yr_cols = [c for c in [
+                    "開發期排名","strategy_id","年份","交易數","平均淨報酬",
+                    "中位數淨報酬","勝率","Profit Factor","10分位淨報酬",
+                    "毛+30%實現率","毛+50%實現率"
+                ] if c in yr.columns]
+                for c in [
+                    "平均淨報酬","中位數淨報酬","勝率","Profit Factor",
+                    "10分位淨報酬","毛+30%實現率","毛+50%實現率"
+                ]:
+                    if c in yr.columns:
+                        yr[c] = pd.to_numeric(yr[c], errors="coerce").round(2)
+                table(
+                    yr.sort_values(["開發期排名","年份"])[yr_cols],
+                    height=500
+                )
+
+            st.warning(
+                "Exit Optimizer 仍屬研究工具。現階段的目標是找『參數區域是否穩健』，"
+                "不是只挑某一組數字最高。下一步還要做參數敏感度熱圖與不同交易成本情境。"
             )
 
 elif page == "一週模型":
