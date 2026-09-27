@@ -1264,6 +1264,20 @@ def main() -> None:
 
         price_archive.to_csv(price_archive_path, index=False, encoding="utf-8-sig")
         print(f"✅ 已累積長期價格資料：{price_archive_path.relative_to(ROOT)}")
+
+        # App 日常圖表不需要把 420 天全部載入；保留最近約 180 個日曆日，
+        # 長期資料仍完整存在 price_history_archive.csv 供 40 日回測 / 型態模型使用。
+        try:
+            latest_ui = latest_price.copy()
+            latest_ui["日期"] = pd.to_datetime(latest_ui["日期"], errors="coerce")
+            max_date = latest_ui["日期"].max()
+            if pd.notna(max_date):
+                latest_ui = latest_ui[latest_ui["日期"] >= max_date - pd.Timedelta(days=180)]
+                latest_ui["日期"] = latest_ui["日期"].dt.strftime("%Y-%m-%d")
+                latest_ui.to_csv(history_dst, index=False, encoding="utf-8-sig")
+                print(f"✅ App 歷史圖保留最近 180 日：{history_dst.relative_to(ROOT)}")
+        except Exception as e:
+            print(f"⚠️ history_latest 精簡失敗，保留完整檔：{e}")
     except Exception as e:
         print(f"⚠️ 長期價格資料累積失敗：{e}")
 
