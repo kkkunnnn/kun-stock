@@ -439,6 +439,58 @@ def build_historical_50_pattern_scores(history_df):
     h["close"] = pd.to_numeric(h.get("close"), errors="coerce")
     h = h.sort_values(["stock_id", "date"]).reset_index(drop=True)
 
+    # 50% 歷史型態模型需要的是「每一個歷史日期」的技術特徵。
+    # namespace 裡的 歷史資料 原本只有 FinMind 原始 OHLCV，
+    # 因此在這裡直接逐檔重算，不能只檢查欄位是否已存在。
+    feature_frames = []
+    for code, g in h.groupby("stock_id", sort=False):
+        g = g.sort_values("date").copy()
+
+        close = pd.to_numeric(g["close"], errors="coerce")
+        high = pd.to_numeric(g["max"], errors="coerce") if "max" in g.columns else close
+        low = pd.to_numeric(g["min"], errors="coerce") if "min" in g.columns else close
+        volume = pd.to_numeric(g["Trading_Volume"], errors="coerce") if "Trading_Volume" in g.columns else pd.Series(index=g.index, dtype=float)
+
+        g["5日報酬率"] = close.pct_change(5) * 100
+        g["20日報酬率"] = close.pct_change(20) * 100
+        g["60日報酬率"] = close.pct_change(60) * 100
+
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        g["14日RSI"] = 100 - (100 / (1 + rs))
+        g.loc[(avg_loss == 0) & avg_gain.notna(), "14日RSI"] = 100
+
+        ma20 = close.rolling(20, min_periods=20).mean()
+        g["MA20乖離率"] = (close / ma20 - 1) * 100
+        g["量比"] = volume / volume.rolling(20, min_periods=20).mean().replace(0, np.nan)
+
+        daily_ret = close.pct_change()
+        g["20日年化波動率"] = daily_ret.rolling(20, min_periods=20).std() * np.sqrt(252) * 100
+
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr14 = tr.rolling(14, min_periods=14).mean()
+        g["ATR百分比"] = atr14 / close.replace(0, np.nan) * 100
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        g["MACD柱狀體"] = macd - signal
+
+        feature_frames.append(g)
+
+    if feature_frames:
+        h = pd.concat(feature_frames, ignore_index=True).sort_values(["stock_id", "date"]).reset_index(drop=True)
+
     feature_cols = [
         "5日報酬率", "20日報酬率", "60日報酬率",
         "14日RSI", "量比", "ATR百分比", "MA20乖離率",
