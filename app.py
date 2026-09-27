@@ -43,6 +43,11 @@ def fmt(v, d=1, suffix=""):
     except Exception: return str(v)
 
 
+def goto_stock_detail(code):
+    st.session_state.selected = code
+    st.session_state.nav = "個股分析"
+
+
 def status_css(s):
     if s == "趨勢健康": return "good"
     if s in ["等待回檔", "整理觀察", "一般觀察"]: return "warn"
@@ -546,8 +551,13 @@ if page == "今日 Top 10":
             r=top.iloc[k]; code=str(r.get("股票代號","")); name=str(r.get("股票名稱","")); status=str(r.get("目前狀態","—"))
             with cc[j]:
                 st.markdown(f'<div class="card"><span class="rank">#{int(r.get("排名",k+1))}</span><div class="title">{code}　{name}</div><div class="muted">{r.get("產業別","—")} ｜ {r.get("候選等級","—")}</div><div class="score">{fmt(r.get("最終分數"),2)}</div><div class="muted">綜合 PR {fmt(r.get("綜合PR"),1)} ｜ <span class="{status_css(status)}">{status}</span></div><div class="muted">風險：{r.get("V5風險提示","—")}</div></div>',unsafe_allow_html=True)
-                if st.button(f"查看 {name} 詳細分析 →",key=f"d_{code}",use_container_width=True):
-                    st.session_state.selected=code; st.session_state.nav="個股分析"; st.rerun()
+                st.button(
+                    f"查看 {name} 詳細分析 →",
+                    key=f"d_{code}",
+                    use_container_width=True,
+                    on_click=goto_stock_detail,
+                    args=(code,),
+                )
 
 
 
