@@ -957,28 +957,34 @@ elif page == "V6 回測":
                         show[c] = show[c].round(2)
                 table(show, height=340)
 
-                st.markdown("### Top 10 與全市場比較")
-                chart_df = summary[summary["群組"].isin(["Top 10","全部股票池"])].copy()
+                st.markdown("### 原始 V5-A vs 一週模型 V5-B")
+                chart_df = summary[summary["群組"].isin(["原始V5 Top 10","一週模型 Top 10","全部股票池"])].copy()
                 if not chart_df.empty:
                     f=go.Figure()
-                    for grp in ["Top 10","全部股票池"]:
+                    for grp in ["原始V5 Top 10","一週模型 Top 10","全部股票池"]:
                         x=chart_df[chart_df["群組"].eq(grp)]
                         if not x.empty:
                             f.add_trace(go.Bar(name=grp,x=x["期間"],y=x["平均報酬率"]))
                     f.update_layout(
                         barmode="group",
-                        height=360,
-                        title="不同持有期間的平均報酬率",
+                        height=380,
+                        title="兩套 Top10 與全市場：不同持有期間平均報酬",
                         yaxis_title="平均報酬率 (%)",
                         margin=dict(l=15,r=15,t=45,b=20),
                     )
                     st.plotly_chart(f,use_container_width=True)
 
-                st.markdown("### 最近已成熟的 Top 10 樣本")
-                top_bt = bt[pd.to_numeric(bt.get("排名"),errors="coerce")<=10].copy()
-                cols=[c for c in ["快照日期","股票代號","股票名稱","排名","最終分數","1日後報酬率","5日後報酬率","20日後報酬率"] if c in top_bt.columns]
-                if cols:
-                    table(top_bt.sort_values(["快照日期","排名"],ascending=[False,True])[cols].head(100),height=460)
+                st.markdown("### 最近已成熟的一週模型 Top 10 樣本")
+                if "一週模型排名" in bt.columns:
+                    top_bt = bt[pd.to_numeric(bt.get("一週模型排名"),errors="coerce")<=10].copy()
+                else:
+                    top_bt = pd.DataFrame()
+                cols=[c for c in [
+                    "快照日期","股票代號","股票名稱","一週模型排名","一週起漲分數","進場時機分數",
+                    "啟動階段","進場判定","1日後報酬率","5日後報酬率","20日後報酬率"
+                ] if c in top_bt.columns]
+                if cols and not top_bt.empty:
+                    table(top_bt.sort_values(["快照日期","一週模型排名"],ascending=[False,True])[cols].head(100),height=460)
 
                 st.markdown("### V6.1 分數區間績效分析")
                 st.caption("用實際後續報酬檢查：高分區間是否真的比低分區間表現更好。樣本數太少時先不要解讀。")
@@ -991,11 +997,17 @@ elif page == "V6 回測":
                     key="v61_horizon",
                 )
                 component_map = {
-                    "V5 最終分數":"最終分數",
-                    "V1 技術":"技術分數",
-                    "V2 籌碼":"籌碼標準分",
-                    "V3 基本面":"基本面分數",
-                    "V4 風險動能":"風險動能分數",
+                    "V5-B 一週起漲分數":"一週起漲分數",
+                    "進場時機分數":"進場時機分數",
+                    "V1-B 技術啟動":"技術啟動分數",
+                    "V2-B 籌碼動能":"籌碼動能分數",
+                    "V3-B 基本品質":"基本品質分數",
+                    "V4-B 價格動能":"價格動能分數",
+                    "原始 V5-A 最終分數":"最終分數",
+                    "原始 V1 技術":"技術分數",
+                    "原始 V2 籌碼":"籌碼標準分",
+                    "原始 V3 基本面":"基本面分數",
+                    "原始 V4 風險動能":"風險動能分數",
                 }
                 component_label = v61b.selectbox(
                     "分析哪個分數",
@@ -1030,7 +1042,7 @@ elif page == "V6 回測":
                     if not small_groups.empty:
                         st.warning("部分分數區間樣本少於 20 筆，目前只能視為初步觀察，不能據此調整權重。")
 
-                st.markdown("### V1～V5 哪個分數與未來報酬關聯較高？")
+                st.markdown("### 哪個分數與未來報酬關聯較高？")
                 predictive = score_predictive_table(bt, horizon)
 
                 if predictive.empty:
