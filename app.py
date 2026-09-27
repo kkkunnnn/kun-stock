@@ -815,6 +815,40 @@ def bucket_chart(bucket_df, title):
 
 
 
+
+
+def load_walkforward_validation():
+    summary_path = DATA_DIR / "walkforward_summary.csv"
+    metadata_path = DATA_DIR / "walkforward_metadata.csv"
+    results_path = DATA_DIR / "walkforward_results.csv"
+
+    summary = pd.DataFrame()
+    metadata = pd.DataFrame()
+    results = pd.DataFrame()
+
+    try:
+        if summary_path.exists():
+            summary = pd.read_csv(summary_path)
+    except Exception:
+        summary = pd.DataFrame()
+
+    try:
+        if metadata_path.exists():
+            metadata = pd.read_csv(metadata_path)
+    except Exception:
+        metadata = pd.DataFrame()
+
+    try:
+        if results_path.exists():
+            results = pd.read_csv(results_path, dtype={"stock_id": str})
+            if "date" in results.columns:
+                results["date"] = pd.to_datetime(results["date"], errors="coerce")
+    except Exception:
+        results = pd.DataFrame()
+
+    return summary, metadata, results
+
+
 def load_global_market():
     detail_path = DATA_DIR / "global_market_latest.csv"
     summary_path = DATA_DIR / "global_market_summary.csv"
@@ -933,6 +967,7 @@ ranking_history_all = load_ranking_history()
 weekly_model_all = load_weekly_model()
 domestic_market_summary = load_domestic_market()
 global_market_detail, global_market_summary = load_global_market()
+walkforward_summary, walkforward_metadata, walkforward_results = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -1217,6 +1252,43 @@ elif page == "專業驗證":
             "真正對外報告應以 forward OOS 的 Top5 / Top10 / Top20 命中率、Lift、MFE/MAE、"
             "不同市場 regime 的穩定度與樣本數作主要證據。"
         )
+
+
+        st.markdown("### Historical Walk-forward")
+        st.caption(
+            "這是另一條獨立驗證線：用較長歷史資料做時間序列 walk-forward，"
+            "每一個測試日只允許使用當時以前、且 40 日標籤已完全成熟的資料訓練。"
+        )
+
+        if walkforward_summary.empty:
+            st.info(
+                "尚未執行歷史 Walk-forward。到 GitHub Actions 手動執行 "
+                "『Historical Walk-Forward Validation』後，結果會出現在這裡。"
+            )
+        else:
+            wf_show = walkforward_summary.copy()
+            for c in [
+                "40日+20%命中率","40日+30%命中率","40日+50%命中率",
+                "40日MFE中位數","40日MAE中位數","40日報酬中位數",
+                "40日正報酬率","+50% Lift"
+            ]:
+                if c in wf_show.columns:
+                    wf_show[c] = pd.to_numeric(wf_show[c], errors="coerce").round(2)
+            table(wf_show, height=300)
+
+            if not walkforward_metadata.empty:
+                md = walkforward_metadata.iloc[0]
+                st.caption(
+                    f"版本：{md.get('模型版本','—')} ｜ "
+                    f"開始日期：{md.get('開始日期','—')} ｜ "
+                    f"測試頻率：{md.get('測試頻率','—')} ｜ "
+                    f"成熟測試樣本：{md.get('成熟測試樣本','—')}"
+                )
+                st.warning(
+                    "目前 Walk-forward 使用『現存股票池』回測，因此仍有 survivorship bias；"
+                    "另外這一版只驗證核心價格型態模型，尚未完整重建歷史法人與基本面因子。"
+                    "這些限制必須在對外專業報告中揭露。"
+                )
 
 elif page == "一週模型":
     st.markdown("## 1～2 個月波段爆發＋進場時機模型")
