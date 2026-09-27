@@ -355,8 +355,9 @@ def attach_forward_returns(snapshot_df, price_df):
 def backtest_summary(bt):
     rows = []
     groups = [
-        ("Top 10", bt[pd.to_numeric(bt.get("排名"), errors="coerce") <= 10]),
-        ("強勢候選", bt[bt.get("候選等級", pd.Series("",index=bt.index)).astype(str).str.contains("強勢候選",na=False)]),
+        ("原始V5 Top 10", bt[pd.to_numeric(bt.get("排名"), errors="coerce") <= 10]),
+        ("一週模型 Top 10", bt[pd.to_numeric(bt.get("一週模型排名"), errors="coerce") <= 10] if "一週模型排名" in bt.columns else bt.iloc[0:0]),
+        ("可觀察進場", bt[bt.get("進場判定", pd.Series("",index=bt.index)).astype(str).str.contains("可觀察進場",na=False)] if "進場判定" in bt.columns else bt.iloc[0:0]),
         ("全部股票池", bt),
     ]
 
@@ -431,11 +432,17 @@ def score_predictive_table(bt, horizon):
         return pd.DataFrame()
 
     score_cols = [
-        ("最終分數", "V5 最終分數"),
-        ("技術分數", "V1 技術"),
-        ("籌碼標準分", "V2 籌碼"),
-        ("基本面分數", "V3 基本面"),
-        ("風險動能分數", "V4 風險動能"),
+        ("一週起漲分數", "V5-B 一週起漲"),
+        ("進場時機分數", "進場時機"),
+        ("技術啟動分數", "V1-B 技術啟動"),
+        ("籌碼動能分數", "V2-B 籌碼動能"),
+        ("基本品質分數", "V3-B 基本品質"),
+        ("價格動能分數", "V4-B 價格動能"),
+        ("最終分數", "原始 V5-A"),
+        ("技術分數", "原始 V1"),
+        ("籌碼標準分", "原始 V2"),
+        ("基本面分數", "原始 V3"),
+        ("風險動能分數", "原始 V4"),
     ]
 
     rows = []
@@ -657,70 +664,151 @@ st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基�
 if coverage < .95:
     st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
 
-pages = ["今日 Top 10","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
+pages = ["今日 Top 10","一週模型","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
 page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
 
 if page == "今日 Top 10":
-    strong = rank.get("候選等級",pd.Series(dtype=str)).astype(str).str.contains("強勢候選",na=False).sum()
-    healthy = rank.get("目前狀態",pd.Series(dtype=str)).astype(str).eq("趨勢健康").sum()
-    overheat = rank.get("目前狀態",pd.Series(dtype=str)).astype(str).eq("短線過熱").sum()
-    a,b,c,d = st.columns(4); a.metric("股票池",f"{len(rank)} 檔"); b.metric("強勢候選",f"{int(strong)} 檔"); c.metric("趨勢健康",f"{int(healthy)} 檔"); d.metric("短線過熱",f"{int(overheat)} 檔")
-    if not global_market_summary.empty:
-        gs = global_market_summary.iloc[0]
-        regime = str(gs.get("全球環境判定","資料不足"))
-        score = gs.get("全球環境分數", np.nan)
-        st.markdown("### 全球市場環境")
-        st.markdown(
-            f'<div class="card"><div class="title">全球環境分數：{fmt(score,1)}</div>'
-            f'<div class="{global_regime_color(regime)}">{regime}</div>'
-            f'<div class="muted">資料日期：{gs.get("資料日期","—")}</div></div>',
-            unsafe_allow_html=True,
-        )
+    weekly_ready = "一週模型排名" in rank.columns and rank["一週模型排名"].notna().any()
 
-    st.markdown("## 今日模型 Top 10")
-    st.caption("依 V1～V5 最終分數排序，作為優先研究清單，不代表保證報酬。")
-    top = rank.sort_values("排名").head(10) if "排名" in rank.columns else rank.head(10)
-    for i in range(0,len(top),2):
-        cc = st.columns(2)
-        for j in range(2):
-            k=i+j
-            if k>=len(top): break
-            r=top.iloc[k]; code=str(r.get("股票代號","")); name=str(r.get("股票名稱","")); status=str(r.get("目前狀態","—"))
-            with cc[j]:
-                st.markdown(f'<div class="card"><span class="rank">#{int(r.get("排名",k+1))}</span><div class="title">{code}　{name}</div><div class="muted">{r.get("產業別","—")} ｜ {r.get("候選等級","—")}</div><div class="score">{fmt(r.get("最終分數"),2)}</div><div class="muted">綜合 PR {fmt(r.get("綜合PR"),1)} ｜ <span class="{status_css(status)}">{status}</span></div><div class="muted">風險：{r.get("V5風險提示","—")}</div></div>',unsafe_allow_html=True)
-                st.button(
-                    f"查看 {name} 詳細分析 →",
-                    key=f"d_{code}",
-                    use_container_width=True,
-                    on_click=goto_stock_detail,
-                    args=(code,),
+    if weekly_ready:
+        usable = rank.copy()
+        can_enter = usable.get("進場判定", pd.Series("", index=usable.index)).astype(str).str.contains("可觀察進場", na=False).sum()
+        just_started = usable.get("啟動階段", pd.Series("", index=usable.index)).astype(str).str.contains("剛啟動", na=False).sum()
+        waiting_breakout = usable.get("進場判定", pd.Series("", index=usable.index)).astype(str).str.contains("等待突破", na=False).sum()
+
+        a,b,c,d = st.columns(4)
+        a.metric("股票池", f"{len(rank)} 檔")
+        b.metric("可觀察進場", f"{int(can_enter)} 檔")
+        c.metric("剛啟動", f"{int(just_started)} 檔")
+        d.metric("等待突破", f"{int(waiting_breakout)} 檔")
+
+        env1,env2 = st.columns(2)
+        with env1:
+            if not domestic_market_summary.empty:
+                ds=domestic_market_summary.iloc[0]
+                st.markdown(
+                    f'<div class="card"><div class="title">台股環境：{fmt(ds.get("台股環境分數"),1)}</div>'
+                    f'<div class="{global_regime_color(str(ds.get("台股環境判定","資料不足")))}">{ds.get("台股環境判定","資料不足")}</div>'
+                    f'<div class="muted">站上MA20：{fmt(ds.get("站上MA20比例"),1,"%")} ｜ 5日上漲：{fmt(ds.get("5日上漲比例"),1,"%")}</div></div>',
+                    unsafe_allow_html=True,
+                )
+        with env2:
+            if not global_market_summary.empty:
+                gs=global_market_summary.iloc[0]
+                regime=str(gs.get("全球環境判定","資料不足"))
+                st.markdown(
+                    f'<div class="card"><div class="title">全球環境：{fmt(gs.get("全球環境分數"),1)}</div>'
+                    f'<div class="{global_regime_color(regime)}">{regime}</div>'
+                    f'<div class="muted">海外市場、半導體、VIX、利率與匯率 Gate</div></div>',
+                    unsafe_allow_html=True,
                 )
 
+        st.markdown("## 未來一週優先觀察 Top 10")
+        st.caption("依『進場時機分數』排序；同時考慮起漲潛力、台股/全球環境、產業海外順風與風險扣分。它是模型訊號，不是保證報酬。")
+
+        top = rank.sort_values(["一週模型排名"]).head(10).copy()
+
+        for i in range(0,len(top),2):
+            cc=st.columns(2)
+            for j in range(2):
+                k=i+j
+                if k>=len(top): break
+                r=top.iloc[k]
+                code=str(r.get("股票代號",""))
+                name=str(r.get("股票名稱",""))
+                stage=str(r.get("啟動階段","—"))
+                entry_label=str(r.get("進場判定","—"))
+                with cc[j]:
+                    st.markdown(
+                        f'<div class="card">'
+                        f'<span class="rank">#{int(r.get("一週模型排名",k+1))}</span>'
+                        f'<div class="title">{code}　{name}</div>'
+                        f'<div class="muted">{r.get("產業別","—")} ｜ {stage}</div>'
+                        f'<div class="score">{fmt(r.get("進場時機分數"),2)}</div>'
+                        f'<div class="muted">一週起漲 {fmt(r.get("一週起漲分數"),1)} ｜ {entry_label}</div>'
+                        f'<div class="muted">技術啟動 {fmt(r.get("技術啟動分數"),0)} ｜ 籌碼動能 {fmt(r.get("籌碼動能分數"),0)} ｜ 基本品質 {fmt(r.get("基本品質分數"),0)} ｜ 價格動能 {fmt(r.get("價格動能分數"),0)}</div>'
+                        f'<div class="muted">風險扣分 {fmt(r.get("風險扣分"),0)} ｜ 原始V5 {fmt(r.get("最終分數"),1)}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        f"查看 {name} 詳細分析 →",
+                        key=f"d_{code}",
+                        use_container_width=True,
+                        on_click=goto_stock_detail,
+                        args=(code,),
+                    )
+
+        if not weekly_daily_change.empty:
+            st.markdown("### 今日一週模型變化")
+            new_top = weekly_daily_change[weekly_daily_change.get("新進一週Top10", False) == True].copy()
+            new_entry = weekly_daily_change[weekly_daily_change.get("新進可觀察進場", False) == True].copy()
+            c1,c2=st.columns(2)
+            with c1:
+                st.markdown("#### 🔥 新進一週 Top 10")
+                if new_top.empty:
+                    st.caption("今天沒有新進一週 Top 10。")
+                else:
+                    cols=[c for c in ["股票代號","股票名稱","一週模型排名","昨日一週排名","一週起漲分數","進場判定"] if c in new_top.columns]
+                    table(new_top[cols].head(10),height=250)
+            with c2:
+                st.markdown("#### 🟢 新進可觀察進場")
+                if new_entry.empty:
+                    st.caption("今天沒有新進可觀察進場訊號。")
+                else:
+                    cols=[c for c in ["股票代號","股票名稱","一週模型排名","進場時機分數","啟動階段","進場判定"] if c in new_entry.columns]
+                    table(new_entry[cols].head(10),height=250)
+
+    else:
+        st.warning("一週模型資料尚未產生。請手動跑一次 GitHub Actions；完成後首頁會自動切換成一週起漲 Top 10。")
+        strong = rank.get("候選等級",pd.Series(dtype=str)).astype(str).str.contains("強勢候選",na=False).sum()
+        a,b=st.columns(2)
+        a.metric("股票池",f"{len(rank)} 檔")
+        b.metric("原始強勢候選",f"{int(strong)} 檔")
+        st.markdown("## 原始 V5-A Top 10（暫時）")
+        top = rank.sort_values("排名").head(10) if "排名" in rank.columns else rank.head(10)
+        cols=[c for c in ["排名","股票代號","股票名稱","最終分數","候選等級","目前狀態"] if c in top.columns]
+        table(top[cols],height=390)
 
 
-    if not daily_change.empty:
-        st.markdown("### 今日變化快訊")
-        new_top = daily_change[daily_change.get("新進Top10", False) == True]
-        risers = daily_change.copy()
-        if "排名變化" in risers.columns:
-            risers = risers[pd.to_numeric(risers["排名變化"], errors="coerce") > 0].sort_values("排名變化", ascending=False).head(5)
-        h1,h2=st.columns(2)
-        with h1:
-            st.markdown("#### 🔥 新進 Top 10")
-            if new_top.empty:
-                st.caption("今天沒有新進 Top 10。")
-            else:
-                cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數"] if c in new_top.columns]
-                table(new_top[cols], height=220)
-        with h2:
-            st.markdown("#### 🚀 排名上升最多")
-            if risers.empty:
-                st.caption("今天沒有排名上升資料。")
-            else:
-                cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","排名變化"] if c in risers.columns]
-                table(risers[cols], height=220)
+elif page == "一週模型":
+    st.markdown("## 一週起漲＋進場時機模型")
+    st.caption("V5-A 原始模型完整保留；這裡是針對『未來約 5 個交易日可能啟動、以及現在是否適合介入』另外建立的 V5-B。")
 
+    if "一週模型排名" not in rank.columns or rank["一週模型排名"].isna().all():
+        st.info("尚未產生一週模型資料。請手動跑一次 GitHub Actions。")
+    else:
+        a,b,c,d=st.columns(4)
+        a.metric("V1-B 技術啟動權重","40%")
+        b.metric("V2-B 籌碼動能權重","30%")
+        c.metric("V3-B 基本品質權重","15%")
+        d.metric("V4-B 價格動能權重","15%")
+
+        f1,f2,f3=st.columns(3)
+        stages=sorted(rank["啟動階段"].dropna().astype(str).unique()) if "啟動階段" in rank.columns else []
+        entries=sorted(rank["進場判定"].dropna().astype(str).unique()) if "進場判定" in rank.columns else []
+        selected_stages=f1.multiselect("啟動階段",stages)
+        selected_entries=f2.multiselect("進場判定",entries)
+        min_week=f3.slider("最低一週起漲分數",0,100,0)
+
+        d=rank.copy()
+        if selected_stages:
+            d=d[d["啟動階段"].isin(selected_stages)]
+        if selected_entries:
+            d=d[d["進場判定"].isin(selected_entries)]
+        if "一週起漲分數" in d.columns:
+            d=d[pd.to_numeric(d["一週起漲分數"],errors="coerce").fillna(-1)>=min_week]
+        d=d.sort_values("一週模型排名")
+
+        cols=[c for c in [
+            "一週模型排名","股票代號","股票名稱","產業別",
+            "一週起漲分數","進場時機分數","啟動階段","進場判定",
+            "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
+            "風險扣分","台股環境分數","全球環境分數","產業海外順風分數",
+            "起漲原因","進場風險","最終分數"
+        ] if c in d.columns]
+        table(d[cols],height=620)
 
 elif page == "全球市場":
     st.markdown("## 全球市場 Gate")
