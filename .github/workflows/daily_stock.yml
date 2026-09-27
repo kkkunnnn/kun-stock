@@ -1,0 +1,50 @@
+name: Daily Taiwan Stock Screener
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 台灣時間週一到週五 17:00（UTC 09:00）
+    - cron: "0 9 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-stock-screener
+  cancel-in-progress: false
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run V1-V5 screener
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          TZ: Asia/Taipei
+        run: python stock_runner.py
+
+      - name: Commit latest results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Auto update stock data $(date +'%Y-%m-%d')"
+            git push
+          fi
