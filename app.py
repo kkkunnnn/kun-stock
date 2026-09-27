@@ -399,8 +399,13 @@ def build_ai_trade_plan(hist, row):
     if stop >= entry_low:
         stop = entry_low - 0.6 * atr
 
+    # 止盈：一週模型以第一道有效壓力作主要止盈；第二道壓力作延伸目標。
+    take_profit = short_res if short_res > entry_high else long_res
+    take_profit2 = long_res if long_res > take_profit else take_profit + atr
+
     risk_pct = (entry_high / stop - 1) * 100 if stop > 0 else np.nan
-    reward1_pct = (short_res / entry_high - 1) * 100 if entry_high > 0 else np.nan
+    reward1_pct = (take_profit / entry_high - 1) * 100 if entry_high > 0 else np.nan
+    reward2_pct = (take_profit2 / entry_high - 1) * 100 if entry_high > 0 else np.nan
     rr1 = reward1_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 and pd.notna(reward1_pct) else np.nan
 
     if "可觀察進場" in entry_label:
@@ -427,6 +432,8 @@ def build_ai_trade_plan(hist, row):
         "觀察買入下緣": entry_low,
         "觀察買入上緣": entry_high,
         "停損失效價": stop,
+        "建議止盈價": take_profit,
+        "第二止盈價": take_profit2,
         "短期支撐": short_support,
         "短期支撐來源": short_support_name,
         "長期支撐": long_support,
@@ -437,7 +444,8 @@ def build_ai_trade_plan(hist, row):
         "長期壓力來源": long_res_name,
         "ATR": atr,
         "估計風險幅度%": risk_pct,
-        "到第一壓力潛在空間%": reward1_pct,
+        "到第一止盈潛在空間%": reward1_pct,
+        "到第二止盈潛在空間%": reward2_pct,
         "第一目標風報比": rr1,
         "進場時機分數": entry_score,
     }
@@ -455,8 +463,14 @@ def ai_trade_plan_chart(hist, plan):
     f = history_price_chart(d)
     f.update_layout(
         title="AI 操作教練：價格與均線",
-        margin=dict(l=15,r=15,t=45,b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=15,r=15,t=55,b=80),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.14,
+            xanchor="left",
+            x=0,
+        ),
     )
 
     low = plan.get("觀察買入下緣")
@@ -1348,6 +1362,8 @@ elif page == "個股分析":
             st.markdown("#### 關鍵價位")
             st.metric("觀察買入區", f"{fmt(plan['觀察買入下緣'],2)} ～ {fmt(plan['觀察買入上緣'],2)}")
             st.metric("停損 / 失效", fmt(plan["停損失效價"],2))
+            st.metric("建議止盈", fmt(plan["建議止盈價"],2))
+            st.caption(f"延伸止盈：{fmt(plan['第二止盈價'],2)}")
 
             st.markdown("**支撐**")
             st.write(f"短期：**{fmt(plan['短期支撐'],2)}**　{plan['短期支撐來源']}")
@@ -1359,11 +1375,13 @@ elif page == "個股分析":
 
             st.markdown("**風險 / 報酬**")
             st.write(f"風險幅度：**{fmt(plan['估計風險幅度%'],1,'%')}**")
-            st.write(f"第一壓力風報比：**{fmt(plan['第一目標風報比'],2)}**")
+            st.write(f"第一止盈空間：**{fmt(plan['到第一止盈潛在空間%'],1,'%')}**")
+            st.write(f"第一止盈風報比：**{fmt(plan['第一目標風報比'],2)}**")
 
         st.info(
             "操作方式：若模型為『可觀察進場』，優先等價格進入觀察買入區再分批評估；"
-            "跌破停損/失效價代表原本的短線結構被破壞。右側價位會隨每日行情重新計算。"
+            "跌破停損/失效價代表原本的短線結構被破壞。『建議止盈』以第一道有效壓力為主，"
+            "若突破並站穩，可再觀察延伸止盈價。所有價位會隨每日行情重新計算。"
         )
 
     st.markdown("### 原始 V5-A")
