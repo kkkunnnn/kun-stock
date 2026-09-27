@@ -110,6 +110,42 @@ def main() -> None:
     shutil.move(str(excel_src), str(excel_dst))
     shutil.move(str(history_src), str(history_dst))
 
+    # V6：累積每日排名快照，作為日後回測與模型驗證的基礎
+    result = namespace.get("結果")
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        snapshot_cols = [
+            "股票代號", "股票名稱", "市場", "產業別",
+            "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
+            "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
+            "收盤價", "V5綜合理由", "V5風險提示"
+        ]
+        snapshot_cols = [c for c in snapshot_cols if c in result.columns]
+
+        snapshot = result[snapshot_cols].copy()
+        snapshot.insert(0, "快照日期", latest_trade_date.strftime("%Y-%m-%d"))
+        snapshot["股票代號"] = (
+            snapshot["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        )
+
+        ranking_history_path = DATA_DIR / "ranking_history.csv"
+
+        if ranking_history_path.exists():
+            old = pd.read_csv(ranking_history_path, dtype={"股票代號": str})
+            combined = pd.concat([old, snapshot], ignore_index=True)
+        else:
+            combined = snapshot
+
+        combined["股票代號"] = (
+            combined["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        )
+        combined = (
+            combined
+            .drop_duplicates(["快照日期", "股票代號"], keep="last")
+            .sort_values(["快照日期", "排名"], ascending=[True, True])
+        )
+        combined.to_csv(ranking_history_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已累積 V6 排名歷史：{ranking_history_path.relative_to(ROOT)}")
+
     print(f"✅ 已更新 {excel_dst.relative_to(ROOT)}")
     print(f"✅ 已更新 {history_dst.relative_to(ROOT)}")
 
