@@ -656,12 +656,59 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         else:
             stage = "① 尚未啟動"
 
+        # 啟動時機分數：回答「現在是不是接近好買點」
         one_week = (
             tech_start * 0.40
             + chip * 0.30
             + quality * 0.15
             + momentum * 0.15
         )
+
+        # 1～2 個月「50%波段」主目標：把爆發力納入主模型，而不是另外做獨立模型。
+        # 重點不是低波動，而是「趨勢剛啟動 + 籌碼加速 + 中期動能 + 足夠波動空間」。
+        volatility_potential = 0.0
+        if pd.notna(annual_vol):
+            if 35 <= annual_vol <= 75:
+                volatility_potential += 45
+            elif 25 <= annual_vol < 35 or 75 < annual_vol <= 90:
+                volatility_potential += 28
+            elif 15 <= annual_vol < 25:
+                volatility_potential += 15
+        if pd.notna(atr):
+            if 2.0 <= atr <= 6.5:
+                volatility_potential += 35
+            elif 1.2 <= atr < 2.0 or 6.5 < atr <= 8.0:
+                volatility_potential += 20
+        if pd.notna(vol_ratio):
+            if 1.2 <= vol_ratio <= 3.5:
+                volatility_potential += 20
+            elif 1.0 <= vol_ratio < 1.2:
+                volatility_potential += 10
+        volatility_potential = min(100.0, volatility_potential)
+
+        breakout_bonus = 0.0
+        if recent_breakout:
+            breakout_bonus += 8
+        elif near_breakout:
+            breakout_bonus += 4
+        if ma_cross:
+            breakout_bonus += 4
+        if macd_cross or hist_accel:
+            breakout_bonus += 4
+        if pd.notna(ret20) and 5 <= ret20 <= 25:
+            breakout_bonus += 5
+        if pd.notna(ret60) and 10 <= ret60 <= 50:
+            breakout_bonus += 5
+
+        swing_power = (
+            tech_start * 0.24
+            + chip * 0.22
+            + quality * 0.10
+            + momentum * 0.24
+            + volatility_potential * 0.20
+            + breakout_bonus
+        )
+        swing_power = max(0.0, min(100.0, swing_power))
 
         industry_score = industry_tailwind_score(row.get("產業別", ""), global_df)
 
@@ -682,6 +729,24 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
 
         entry = one_week + market_adjustment + stage_adjustment - risk_penalty
         entry = max(0.0, min(100.0, entry))
+
+        # 單一主模型：65% 看 1～2 月爆發潛力，35% 看現在是否適合進場。
+        # 市場 / 產業順風與風險已經透過 entry 反映，因此不重複加權。
+        main_score = swing_power * 0.65 + entry * 0.35
+        if stage == "⑤ 過熱":
+            main_score -= 8
+        elif stage == "⑥ 轉弱":
+            main_score -= 15
+        main_score = max(0.0, min(100.0, main_score))
+
+        if swing_power >= 82:
+            swing_label = "🔥 高爆發潛力"
+        elif swing_power >= 72:
+            swing_label = "🟢 中高爆發潛力"
+        elif swing_power >= 60:
+            swing_label = "🟡 中等爆發潛力"
+        else:
+            swing_label = "⚪ 爆發潛力不足"
 
         if stage == "⑤ 過熱":
             entry_label = "🟠 短線過熱"
@@ -705,6 +770,10 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
             "基本品質分數": round(quality, 2),
             "價格動能分數": round(momentum, 2),
             "一週起漲分數": round(one_week, 2),
+            "波段爆發分數": round(swing_power, 2),
+            "波動爆發潛力": round(volatility_potential, 2),
+            "主模型分數": round(main_score, 2),
+            "50%潛力判定": swing_label,
             "風險扣分": round(risk_penalty, 2),
             "全球環境分數": round(global_score, 2),
             "台股環境分數": round(domestic_score, 2),
@@ -725,9 +794,17 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         pd.to_numeric(out["一週起漲分數"], errors="coerce")
         .rank(ascending=False, method="min")
     )
-    sort_cols = ["進場時機分數", "一週起漲分數"]
-    out = out.sort_values(sort_cols, ascending=[False, False], na_position="last").reset_index(drop=True)
+    out["波段爆發排名"] = (
+        pd.to_numeric(out["波段爆發分數"], errors="coerce")
+        .rank(ascending=False, method="min")
+    )
+    out = out.sort_values(
+        ["主模型分數", "波段爆發分數", "進場時機分數"],
+        ascending=[False, False, False],
+        na_position="last",
+    ).reset_index(drop=True)
     out["一週模型排名"] = range(1, len(out) + 1)
+    out["主模型排名"] = out["一週模型排名"]
 
     return out
 
@@ -901,7 +978,8 @@ def main() -> None:
             "股票代號", "股票名稱", "市場", "產業別",
             "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
             "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
-            "一週模型排名", "起漲潛力排名", "一週起漲分數", "進場時機分數",
+            "一週模型排名", "主模型排名", "起漲潛力排名", "波段爆發排名",
+            "一週起漲分數", "波段爆發分數", "波動爆發潛力", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
             "風險扣分", "啟動階段", "進場判定",
             "全球環境分數", "台股環境分數", "產業海外順風分數",
