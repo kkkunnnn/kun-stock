@@ -614,7 +614,7 @@ def attach_forward_returns(snapshot_df, price_df):
         base = g.iloc[i]["收盤價"]
         rec = r.to_dict()
 
-        for horizon in [1,5,20]:
+        for horizon in [1,5,20,40]:
             j = i + horizon
             col = f"{horizon}日後報酬率"
             if j < len(g):
@@ -622,6 +622,21 @@ def attach_forward_returns(snapshot_df, price_df):
                 rec[col] = (future / base - 1) * 100
             else:
                 rec[col] = np.nan
+
+        for horizon in [20,40]:
+            end = min(i + horizon, len(g) - 1)
+            if end > i:
+                future_slice = g.iloc[i+1:end+1]["收盤價"]
+                max_ret = (future_slice.max() / base - 1) * 100 if len(future_slice) else np.nan
+            else:
+                max_ret = np.nan
+            rec[f"{horizon}日內最高報酬率"] = max_ret
+
+        rec["40日內達50%"] = (
+            rec.get("40日內最高報酬率", np.nan) >= 50
+            if pd.notna(rec.get("40日內最高報酬率", np.nan))
+            else np.nan
+        )
 
         records.append(rec)
 
@@ -638,7 +653,7 @@ def backtest_summary(bt):
     ]
 
     for label, d in groups:
-        for h in [1,5,20]:
+        for h in [1,5,20,40]
             col=f"{h}日後報酬率"
             if col not in d.columns:
                 continue
@@ -653,6 +668,18 @@ def backtest_summary(bt):
                 "中位數報酬率":x.median(),
                 "勝率":(x>0).mean()*100,
             })
+    if "40日內達50%" in bt.columns:
+        for label, d in groups:
+            x = d["40日內達50%"].dropna()
+            if len(x):
+                rows.append({
+                    "群組": label,
+                    "期間": "40日內+50%",
+                    "樣本數": len(x),
+                    "平均報酬率": np.nan,
+                    "中位數報酬率": np.nan,
+                    "勝率": x.astype(float).mean() * 100,
+                })
     return pd.DataFrame(rows)
 
 
@@ -908,7 +935,8 @@ rank = normalize(sheets.get("全部排名", pd.DataFrame()))
 if not weekly_model_all.empty:
     weekly_cols = [
         c for c in [
-            "股票代號","一週模型排名","起漲潛力排名","一週起漲分數","進場時機分數",
+            "股票代號","一週模型排名","主模型排名","起漲潛力排名","波段爆發排名",
+            "一週起漲分數","波段爆發分數","波動爆發潛力","主模型分數","50%潛力判定","進場時機分數",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
             "風險扣分","啟動階段","進場判定","起漲原因","進場風險",
             "全球環境分數","台股環境分數","產業海外順風分數",
@@ -980,8 +1008,8 @@ if page == "今日 Top 10":
                     unsafe_allow_html=True,
                 )
 
-        st.markdown("## 未來一週優先觀察 Top 10")
-        st.caption("依『進場時機分數』排序；同時考慮起漲潛力、台股/全球環境、產業海外順風與風險扣分。它是模型訊號，不是保證報酬。")
+        st.markdown("## 1～2 個月 50% 波段目標 Top 10")
+        st.caption("主排名目標是找出未來 1～2 個月具大波段爆發潛力的個股；主模型以波段爆發潛力為核心，再結合目前進場時機。50% 是篩選與回測目標，不是保證報酬。")
 
         top = rank.sort_values(["一週模型排名"]).head(10).copy()
 
@@ -1001,8 +1029,9 @@ if page == "今日 Top 10":
                         f'<span class="rank">#{int(r.get("一週模型排名",k+1))}</span>'
                         f'<div class="title">{code}　{name}</div>'
                         f'<div class="muted">{r.get("產業別","—")} ｜ {stage}</div>'
-                        f'<div class="score">{fmt(r.get("進場時機分數"),2)}</div>'
-                        f'<div class="muted">一週起漲 {fmt(r.get("一週起漲分數"),1)} ｜ {entry_label}</div>'
+                        f'<div class="score">{fmt(r.get("主模型分數"),2)}</div>'
+                        f'<div class="muted">{r.get("50%潛力判定","—")} ｜ {entry_label}</div>'
+                        f'<div class="muted">波段爆發 {fmt(r.get("波段爆發分數"),1)} ｜ 進場時機 {fmt(r.get("進場時機分數"),1)}</div>'
                         f'<div class="muted">技術啟動 {fmt(r.get("技術啟動分數"),0)} ｜ 籌碼動能 {fmt(r.get("籌碼動能分數"),0)} ｜ 基本品質 {fmt(r.get("基本品質分數"),0)} ｜ 價格動能 {fmt(r.get("價格動能分數"),0)}</div>'
                         f'<div class="muted">風險扣分 {fmt(r.get("風險扣分"),0)} ｜ 原始V5 {fmt(r.get("最終分數"),1)}</div>'
                         f'</div>',
@@ -1049,8 +1078,8 @@ if page == "今日 Top 10":
 
 
 elif page == "一週模型":
-    st.markdown("## 一週起漲＋進場時機模型")
-    st.caption("V5-A 原始模型完整保留；這裡是針對『未來約 5 個交易日可能啟動、以及現在是否適合介入』另外建立的 V5-B。")
+    st.markdown("## 1～2 個月波段爆發＋進場時機模型")
+    st.caption("這是目前的主模型：目標不是短線小幅上漲，而是篩選 1～2 個月內具大波段、甚至挑戰 +50% 潛力的個股；短期啟動訊號只負責判斷何時進場。")
 
     if "一週模型排名" not in rank.columns or rank["一週模型排名"].isna().all():
         st.info("尚未產生一週模型資料。請手動跑一次 GitHub Actions。")
@@ -1078,8 +1107,8 @@ elif page == "一週模型":
         d=d.sort_values("一週模型排名")
 
         cols=[c for c in [
-            "一週模型排名","股票代號","股票名稱","產業別",
-            "一週起漲分數","進場時機分數","啟動階段","進場判定",
+            "主模型排名","股票代號","股票名稱","產業別",
+            "主模型分數","波段爆發分數","50%潛力判定","一週起漲分數","進場時機分數","啟動階段","進場判定",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
             "風險扣分","台股環境分數","全球環境分數","產業海外順風分數",
             "起漲原因","進場風險","最終分數"
@@ -1258,7 +1287,8 @@ elif page == "V6 回測":
                     top_bt = pd.DataFrame()
                 cols=[c for c in [
                     "快照日期","股票代號","股票名稱","一週模型排名","一週起漲分數","進場時機分數",
-                    "啟動階段","進場判定","1日後報酬率","5日後報酬率","20日後報酬率"
+                    "啟動階段","進場判定","1日後報酬率","5日後報酬率","20日後報酬率","40日後報酬率",
+                    "20日內最高報酬率","40日內最高報酬率","40日內達50%"
                 ] if c in top_bt.columns]
                 if cols and not top_bt.empty:
                     table(top_bt.sort_values(["快照日期","一週模型排名"],ascending=[False,True])[cols].head(100),height=460)
@@ -1274,6 +1304,8 @@ elif page == "V6 回測":
                     key="v61_horizon",
                 )
                 component_map = {
+                    "主模型分數":"主模型分數",
+                    "波段爆發分數":"波段爆發分數",
                     "V5-B 一週起漲分數":"一週起漲分數",
                     "進場時機分數":"進場時機分數",
                     "V1-B 技術啟動":"技術啟動分數",
@@ -1356,10 +1388,11 @@ elif page == "個股分析":
     if pd.notna(row.get("一週模型排名", np.nan)):
         st.markdown("### 一週模型")
         a,b,c,d=st.columns(4)
-        a.metric("一週模型排名",fmt(row.get("一週模型排名"),0))
-        b.metric("一週起漲分數",fmt(row.get("一週起漲分數"),1))
-        c.metric("進場時機分數",fmt(row.get("進場時機分數"),1))
-        d.metric("啟動階段",str(row.get("啟動階段","—")))
+        a.metric("主模型排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
+        b.metric("主模型分數",fmt(row.get("主模型分數"),1))
+        c.metric("波段爆發分數",fmt(row.get("波段爆發分數"),1))
+        d.metric("進場時機",fmt(row.get("進場時機分數"),1))
+        st.caption(f"{row.get('50%潛力判定','—')} ｜ 啟動階段：{row.get('啟動階段','—')}")
 
         x1,x2,x3,x4=st.columns(4)
         x1.metric("技術啟動",fmt(row.get("技術啟動分數"),0))
@@ -1382,7 +1415,7 @@ elif page == "個股分析":
         g1.metric("台股環境",fmt(row.get("台股環境分數"),1))
         g2.metric("全球環境",fmt(row.get("全球環境分數"),1))
         g3.metric("產業海外順風",fmt(row.get("產業海外順風分數"),1))
-        st.caption("一週模型權重：技術啟動 40%｜籌碼動能 30%｜基本品質 15%｜價格動能 15%；風險與市場環境另外作 Gate。")
+        st.caption("主模型目標：1～2 個月大波段。波段爆發分數重視技術啟動、籌碼動能、中期價格動能、基本品質與足夠波動空間；進場時機另外結合市場 Gate 與風險。")
     else:
         st.info("這檔目前還沒有一週模型資料，請先跑一次 GitHub Actions。")
 
