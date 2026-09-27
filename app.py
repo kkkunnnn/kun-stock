@@ -210,6 +210,98 @@ def history_macd_chart(d):
     return f
 
 
+
+@st.cache_data(show_spinner=False)
+def load_ranking_history():
+    p = DATA_DIR / "ranking_history.csv"
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        d = pd.read_csv(p, dtype={"股票代號": str})
+        d["股票代號"] = d["股票代號"].astype(str).str.replace(".0","",regex=False).str.zfill(4)
+        d["快照日期"] = pd.to_datetime(d["快照日期"], errors="coerce")
+        return d
+    except Exception:
+        return pd.DataFrame()
+
+
+def attach_forward_returns(snapshot_df, price_df):
+    if snapshot_df.empty or price_df.empty:
+        return pd.DataFrame()
+
+    required = {"股票代號","快照日期"}
+    if not required.issubset(snapshot_df.columns):
+        return pd.DataFrame()
+
+    p = price_df.copy()
+    if "日期" not in p.columns or "收盤價" not in p.columns or "股票代號" not in p.columns:
+        return pd.DataFrame()
+
+    p["日期"] = pd.to_datetime(p["日期"], errors="coerce")
+    p["收盤價"] = pd.to_numeric(p["收盤價"], errors="coerce")
+    p = p.dropna(subset=["日期","收盤價"])
+
+    price_map = {
+        code: g.sort_values("日期")[["日期","收盤價"]].reset_index(drop=True)
+        for code, g in p.groupby("股票代號")
+    }
+
+    records = []
+    for _, r in snapshot_df.iterrows():
+        code = str(r["股票代號"])
+        snap_date = pd.to_datetime(r["快照日期"], errors="coerce")
+        g = price_map.get(code)
+        if g is None or pd.isna(snap_date):
+            continue
+
+        pos = g.index[g["日期"] >= snap_date]
+        if len(pos) == 0:
+            continue
+        i = int(pos[0])
+        base = g.iloc[i]["收盤價"]
+        rec = r.to_dict()
+
+        for horizon in [1,5,20]:
+            j = i + horizon
+            col = f"{horizon}日後報酬率"
+            if j < len(g):
+                future = g.iloc[j]["收盤價"]
+                rec[col] = (future / base - 1) * 100
+            else:
+                rec[col] = np.nan
+
+        records.append(rec)
+
+    return pd.DataFrame(records)
+
+
+def backtest_summary(bt):
+    rows = []
+    groups = [
+        ("Top 10", bt[pd.to_numeric(bt.get("排名"), errors="coerce") <= 10]),
+        ("強勢候選", bt[bt.get("候選等級", pd.Series("",index=bt.index)).astype(str).str.contains("強勢候選",na=False)]),
+        ("全部股票池", bt),
+    ]
+
+    for label, d in groups:
+        for h in [1,5,20]:
+            col=f"{h}日後報酬率"
+            if col not in d.columns:
+                continue
+            x=pd.to_numeric(d[col],errors="coerce").dropna()
+            if len(x)==0:
+                continue
+            rows.append({
+                "群組":label,
+                "期間":f"{h}交易日",
+                "樣本數":len(x),
+                "平均報酬率":x.mean(),
+                "中位數報酬率":x.median(),
+                "勝率":(x>0).mean()*100,
+            })
+    return pd.DataFrame(rows)
+
+
 def base_date(sheets, filename):
     d = sheets.get("系統說明")
     if d is not None and not d.empty and {"項目","說明"}.issubset(d.columns):
@@ -293,6 +385,7 @@ def table(df, height=500):
 css()
 sheets, source = load_data()
 history_all = load_history()
+ranking_history_all = load_ranking_history()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -315,7 +408,7 @@ st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基�
 if coverage < .95:
     st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
 
-pages = ["今日 Top 10","每日變化","個股分析","完整排名","風險監控","產業分析"]
+pages = ["今日 Top 10","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
 page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
 
@@ -400,6 +493,59 @@ elif page == "每日變化":
             cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數","分數變化","候選等級","昨日候選等級","目前狀態"] if c in new_strong.columns]
             table(new_strong[cols], height=300)
 
+
+
+elif page == "V6 回測":
+    st.markdown("## V6 回測與模型驗證")
+    st.caption("V6 不新增選股分數，而是驗證 V1～V5 高分股票之後的實際表現。資料會從啟用 ranking_history.csv 後逐日累積。")
+
+    if ranking_history_all.empty:
+        st.info("目前尚未有 ranking_history.csv。今晚 GitHub Actions 下一次成功執行後，系統會自動開始累積每日排名快照。")
+    else:
+        dates = ranking_history_all["快照日期"].dropna().dt.date.nunique()
+        st.metric("已累積交易日", f"{dates} 日")
+
+        bt = attach_forward_returns(ranking_history_all, history_all)
+
+        if bt.empty:
+            st.info("已有排名歷史，但尚未累積足夠後續價格來計算報酬。")
+        else:
+            summary = backtest_summary(bt)
+
+            if summary.empty:
+                st.info("回測資料仍在累積。至少經過下一個交易日後才會開始出現 1 日報酬；5 日、20 日指標會依序解鎖。")
+            else:
+                st.markdown("### 模型績效摘要")
+                show = summary.copy()
+                for c in ["平均報酬率","中位數報酬率","勝率"]:
+                    if c in show.columns:
+                        show[c] = show[c].round(2)
+                table(show, height=340)
+
+                st.markdown("### Top 10 與全市場比較")
+                chart_df = summary[summary["群組"].isin(["Top 10","全部股票池"])].copy()
+                if not chart_df.empty:
+                    f=go.Figure()
+                    for grp in ["Top 10","全部股票池"]:
+                        x=chart_df[chart_df["群組"].eq(grp)]
+                        if not x.empty:
+                            f.add_trace(go.Bar(name=grp,x=x["期間"],y=x["平均報酬率"]))
+                    f.update_layout(
+                        barmode="group",
+                        height=360,
+                        title="不同持有期間的平均報酬率",
+                        yaxis_title="平均報酬率 (%)",
+                        margin=dict(l=15,r=15,t=45,b=20),
+                    )
+                    st.plotly_chart(f,use_container_width=True)
+
+                st.markdown("### 最近已成熟的 Top 10 樣本")
+                top_bt = bt[pd.to_numeric(bt.get("排名"),errors="coerce")<=10].copy()
+                cols=[c for c in ["快照日期","股票代號","股票名稱","排名","最終分數","1日後報酬率","5日後報酬率","20日後報酬率"] if c in top_bt.columns]
+                if cols:
+                    table(top_bt.sort_values(["快照日期","排名"],ascending=[False,True])[cols].head(100),height=460)
+
+                st.warning("目前 V6 是『前瞻式驗證』：從系統開始每天保存排名後累積樣本。這可避免用今天知道的資料回填過去，降低前視偏誤。")
 
 elif page == "個股分析":
     opts=rank.apply(lambda r:f"{r['股票代號']} {r['股票名稱']}",axis=1).tolist()
