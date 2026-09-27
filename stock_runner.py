@@ -109,6 +109,21 @@ def safe_finmind_batch(api, stock_ids, start_date, end_date):
                 use_async=True,
             )
             if df is not None and not df.empty:
+                # FinMind 有時只回傳部分股票；立即用 Yahoo 補齊這個 batch，
+                # 避免 Notebook 後面再逐檔打 FinMind 耗盡額度。
+                got = set(
+                    df["stock_id"].astype(str).str.replace(".0","",regex=False).str.zfill(4)
+                ) if "stock_id" in df.columns else set()
+                requested = {str(x).zfill(4) for x in stock_ids}
+                missing = sorted(requested - got)
+
+                if missing:
+                    print(f"⚠️ FinMind 此批缺 {len(missing)} 檔，改由 Yahoo 補齊")
+                    backup = _yfinance_taiwan_batch(missing, start_date, end_date)
+                    if backup is not None and not backup.empty:
+                        df = pd.concat([df, backup], ignore_index=True)
+                        print(f"✅ Yahoo 補齊 {backup['stock_id'].nunique()} 檔")
+
                 return df
 
             print("⚠️ FinMind async 回傳空資料，切換 Yahoo Finance 備援")
