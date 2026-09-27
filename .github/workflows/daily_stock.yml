@@ -3,8 +3,8 @@ name: Daily Taiwan Stock Screener
 on:
   workflow_dispatch:
   schedule:
-    # 台灣時間週一到週五 17:00（UTC 09:00）
-    - cron: "0 9 * * 1-5"
+    # 台灣時間週一到週五 21:00（UTC 13:00）
+    - cron: "0 13 * * 1-5"
 
 permissions:
   contents: write
