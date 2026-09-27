@@ -357,7 +357,136 @@ def _consecutive_positive(series):
     return count
 
 
-def build_one_week_model(result_df, history_df, inst_df, global_df, global_summary, domestic_summary):
+
+
+def build_historical_50_pattern_scores(history_df):
+    """
+    用現有歷史技術資料建立「未來40交易日內曾上漲50%」的歷史型態相似度。
+    不使用未來資料產生當日特徵；未來價格只用來建立歷史標籤。
+    回傳每檔目前型態的鄰近樣本命中率、PR與樣本統計。
+    """
+    if history_df is None or history_df.empty:
+        return pd.DataFrame(), {
+            "歷史樣本數": 0, "50%命中樣本數": 0, "50%基準命中率": float("nan")
+        }
+
+    h = history_df.copy()
+    h["stock_id"] = h["stock_id"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+    h["date"] = pd.to_datetime(h["date"], errors="coerce")
+    h["close"] = pd.to_numeric(h.get("close"), errors="coerce")
+    h = h.sort_values(["stock_id", "date"]).reset_index(drop=True)
+
+    feature_cols = [
+        "5日報酬率", "20日報酬率", "60日報酬率",
+        "14日RSI", "量比", "ATR百分比", "MA20乖離率",
+        "20日年化波動率", "MACD柱狀體"
+    ]
+    feature_cols = [c for c in feature_cols if c in h.columns]
+    if len(feature_cols) < 5:
+        return pd.DataFrame(), {
+            "歷史樣本數": 0, "50%命中樣本數": 0, "50%基準命中率": float("nan")
+        }
+
+    labeled_parts = []
+    current_rows = []
+
+    for code, g in h.groupby("stock_id", sort=False):
+        g = g.sort_values("date").copy().reset_index(drop=True)
+        n = len(g)
+        if n == 0:
+            continue
+
+        closes = pd.to_numeric(g["close"], errors="coerce").to_numpy(dtype=float)
+        future_max_ret = [float("nan")] * n
+
+        # 只對真的有完整40個後續交易日的歷史點建立標籤，避免把未成熟樣本當失敗。
+        for i in range(n - 40):
+            base = closes[i]
+            future = closes[i+1:i+41]
+            if pd.notna(base) and base > 0 and len(future) == 40:
+                valid = future[pd.notna(future)]
+                if len(valid) == 40:
+                    future_max_ret[i] = (valid.max() / base - 1) * 100
+
+        g["40日內最高報酬率_標籤"] = future_max_ret
+        mature = g[g["40日內最高報酬率_標籤"].notna()].copy()
+        if not mature.empty:
+            mature["40日內達50_標籤"] = mature["40日內最高報酬率_標籤"] >= 50
+            labeled_parts.append(mature)
+
+        current_rows.append(g.iloc[-1].copy())
+
+    if not labeled_parts or not current_rows:
+        return pd.DataFrame(), {
+            "歷史樣本數": 0, "50%命中樣本數": 0, "50%基準命中率": float("nan")
+        }
+
+    train = pd.concat(labeled_parts, ignore_index=True)
+    current = pd.DataFrame(current_rows)
+
+    for c in feature_cols:
+        train[c] = pd.to_numeric(train[c], errors="coerce")
+        current[c] = pd.to_numeric(current[c], errors="coerce")
+
+    train = train.dropna(subset=feature_cols + ["40日內達50_標籤"]).copy()
+    current = current.dropna(subset=feature_cols).copy()
+
+    if len(train) < 200 or current.empty:
+        return pd.DataFrame(), {
+            "歷史樣本數": int(len(train)),
+            "50%命中樣本數": int(train.get("40日內達50_標籤", pd.Series(dtype=bool)).sum()) if len(train) else 0,
+            "50%基準命中率": float(train["40日內達50_標籤"].mean() * 100) if len(train) else float("nan")
+        }
+
+    means = train[feature_cols].mean()
+    stds = train[feature_cols].std().replace(0, 1).fillna(1)
+    ztrain = ((train[feature_cols] - means) / stds).clip(-5, 5)
+    zcurrent = ((current[feature_cols] - means) / stds).clip(-5, 5)
+
+    y = train["40日內達50_標籤"].astype(float).to_numpy()
+    train_mat = ztrain.to_numpy(dtype=float)
+    k = min(250, max(80, int(len(train) ** 0.5 * 3)))
+
+    rows = []
+    for idx, r in current.iterrows():
+        v = zcurrent.loc[idx].to_numpy(dtype=float)
+        dist = ((train_mat - v) ** 2).mean(axis=1) ** 0.5
+        order = dist.argsort()[:k]
+        dsel = dist[order]
+        ysel = y[order]
+
+        # 越相似權重越大；加上極小值避免除零。
+        w = 1.0 / (dsel + 0.20)
+        hit_rate = float((ysel * w).sum() / w.sum() * 100)
+        avg_future_max = float(
+            (pd.to_numeric(train.iloc[order]["40日內最高報酬率_標籤"], errors="coerce").to_numpy() * w).sum()
+            / w.sum()
+        )
+        positive_neighbors = int(ysel.sum())
+
+        rows.append({
+            "股票代號": str(r["stock_id"]).zfill(4),
+            "50%歷史型態命中率": round(hit_rate, 3),
+            "相似樣本40日最高報酬均值": round(avg_future_max, 2),
+            "相似樣本數": int(k),
+            "相似樣本50%命中數": positive_neighbors,
+        })
+
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["50%歷史型態PR"] = out["50%歷史型態命中率"].rank(pct=True, method="average") * 100
+
+    stats = {
+        "歷史樣本數": int(len(train)),
+        "50%命中樣本數": int(train["40日內達50_標籤"].sum()),
+        "50%基準命中率": round(float(train["40日內達50_標籤"].mean() * 100), 3),
+        "特徵數": len(feature_cols),
+        "鄰近樣本K": int(k),
+    }
+    return out, stats
+
+
+def build_one_week_model(result_df, history_df, inst_df, global_df, global_summary, domestic_summary, pattern_scores=None):
     if result_df is None or result_df.empty:
         return pd.DataFrame()
 
@@ -365,6 +494,9 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
     out["股票代號"] = (
         out["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
     )
+
+    if pattern_scores is not None and not pattern_scores.empty:
+        out = out.merge(pattern_scores, on="股票代號", how="left")
 
     global_score = 50.0
     global_regime = "資料不足"
@@ -429,6 +561,9 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         atr = _safe_num(row.get("ATR百分比"))
         annual_vol = _safe_num(row.get("20日年化波動率"))
         drawdown = _safe_num(row.get("20日最大回撤"))
+        pattern_hit = _safe_num(row.get("50%歷史型態命中率"), 0.0)
+        pattern_pr = _safe_num(row.get("50%歷史型態PR"), 50.0)
+        pattern_future_max = _safe_num(row.get("相似樣本40日最高報酬均值"), 0.0)
 
         ma20_rising = False
         ma_cross = False
@@ -766,12 +901,15 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         elif quality < 45:
             quality_gate = 75.0
 
+        # 主爆發分數直接對齊「歷史上40日內曾漲50%」的相似型態。
+        # 歷史型態PR佔45%，其餘才是即時突破/動能/籌碼/波動。
         swing_power = (
-            breakout_score * 0.30
-            + persistence_score * 0.24
-            + chip * 0.18
-            + volatility_potential * 0.16
-            + activity_score * 0.12
+            pattern_pr * 0.45
+            + breakout_score * 0.18
+            + persistence_score * 0.15
+            + chip * 0.10
+            + volatility_potential * 0.07
+            + activity_score * 0.05
         )
         swing_power *= quality_gate / 100.0
 
@@ -845,6 +983,9 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
             "價格動能分數": round(momentum, 2),
             "一週起漲分數": round(one_week, 2),
             "波段爆發分數": round(swing_power, 2),
+            "50%歷史型態命中率": round(pattern_hit, 3),
+            "50%歷史型態PR": round(pattern_pr, 2),
+            "相似樣本40日最高報酬均值": round(pattern_future_max, 2),
             "突破強度分數": round(breakout_score, 2),
             "動能持續分數": round(persistence_score, 2),
             "活躍爆發分數": round(activity_score, 2),
@@ -994,9 +1135,22 @@ def main() -> None:
             "台股環境判定": "資料不足",
         }])
 
-    # V5-B：一週起漲模型 + 進場時機模型
+    # 主模型：40交易日 +50% 目標 + 進場時機
     result = namespace.get("結果")
     weekly_result = pd.DataFrame()
+
+    pattern_scores, pattern_stats = build_historical_50_pattern_scores(
+        namespace.get("歷史資料", pd.DataFrame())
+    )
+    if pattern_stats:
+        pd.DataFrame([pattern_stats]).to_csv(
+            DATA_DIR / "pattern50_model_stats.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
+        print(f"✅ 50%歷史型態：樣本 {pattern_stats.get('歷史樣本數',0)}，"
+              f"命中 {pattern_stats.get('50%命中樣本數',0)}，"
+              f"基準率 {pattern_stats.get('50%基準命中率',float('nan'))}%")
 
     if isinstance(result, pd.DataFrame) and not result.empty:
         weekly_result = build_one_week_model(
@@ -1006,6 +1160,7 @@ def main() -> None:
             global_df,
             global_summary,
             domestic_summary,
+            pattern_scores,
         )
 
         weekly_path = DATA_DIR / "weekly_model_latest.csv"
@@ -1056,7 +1211,8 @@ def main() -> None:
             "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
             "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
             "一週模型排名", "主模型排名", "起漲潛力排名", "波段爆發排名",
-            "一週起漲分數", "波段爆發分數", "突破強度分數", "動能持續分數", "活躍爆發分數",
+            "一週起漲分數", "波段爆發分數", "50%歷史型態命中率", "50%歷史型態PR",
+            "相似樣本40日最高報酬均值", "突破強度分數", "動能持續分數", "活躍爆發分數",
             "波動爆發潛力", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
             "風險扣分", "啟動階段", "進場判定",
