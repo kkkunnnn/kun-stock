@@ -1031,6 +1031,7 @@ if page == "今日 Top 10":
                         f'<span class="rank">#{int(r.get("一週模型排名",k+1))}</span>'
                         f'<div class="title">{code}　{name}</div>'
                         f'<div class="muted">{r.get("產業別","—")} ｜ {stage}</div>'
+                        f'<div class="muted">收盤價：<b>{fmt(r.get("收盤價"),2)}</b></div>'
                         f'<div class="score">{fmt(r.get("主模型分數"),2)}</div>'
                         f'<div class="muted">{r.get("50%潛力判定","—")} ｜ {entry_label}</div>'
                         f'<div class="muted">波段爆發 {fmt(r.get("波段爆發分數"),1)} ｜ 進場時機 {fmt(r.get("進場時機分數"),1)}</div>'
