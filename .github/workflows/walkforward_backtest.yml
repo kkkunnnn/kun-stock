@@ -1,0 +1,47 @@
+name: Historical Walk-Forward Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: historical-walkforward
+  cancel-in-progress: false
+
+jobs:
+  walkforward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run historical walk-forward
+        env:
+          TZ: Asia/Taipei
+          WF_START_DATE: "2019-01-01"
+        run: python historical_walkforward.py
+
+      - name: Commit walk-forward results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/walkforward_*.csv
+          if git diff --cached --quiet; then
+            echo "No walk-forward changes to commit."
+          else
+            git commit -m "Update historical walk-forward validation"
+            git push
+          fi
