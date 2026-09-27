@@ -13,6 +13,13 @@ from exit_optimizer import (
     build_robustness_tables,
     build_robustness_scorecard,
 )
+from regime_validation import (
+    build_regime_table,
+    attach_regime,
+    summarize_regime_signals,
+    summarize_regime_exit,
+    build_regime_gate_table,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -534,6 +541,19 @@ def main():
         optimizer_yearly,
     )
 
+    regime_history = build_regime_table(prices, START_DATE)
+    results_with_regime = attach_regime(res, regime_history)
+    regime_signal_summary = summarize_regime_signals(results_with_regime)
+    regime_exit_summary = summarize_regime_exit(
+        optimizer_trades,
+        regime_history,
+        strategy_id="SL10_HOLD60",
+    )
+    regime_gate = build_regime_gate_table(
+        regime_signal_summary,
+        regime_exit_summary,
+    )
+
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
@@ -546,6 +566,10 @@ def main():
     robustness_trailing.to_csv(DATA_DIR / "walkforward_robustness_trailing.csv", index=False, encoding="utf-8-sig")
     robustness_cost.to_csv(DATA_DIR / "walkforward_robustness_cost.csv", index=False, encoding="utf-8-sig")
     robustness_scorecard.to_csv(DATA_DIR / "walkforward_robustness_scorecard.csv", index=False, encoding="utf-8-sig")
+    regime_history.to_csv(DATA_DIR / "walkforward_regime_history.csv", index=False, encoding="utf-8-sig")
+    regime_signal_summary.to_csv(DATA_DIR / "walkforward_regime_signal_summary.csv", index=False, encoding="utf-8-sig")
+    regime_exit_summary.to_csv(DATA_DIR / "walkforward_regime_exit_summary.csv", index=False, encoding="utf-8-sig")
+    regime_gate.to_csv(DATA_DIR / "walkforward_regime_gate.csv", index=False, encoding="utf-8-sig")
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
@@ -566,6 +590,9 @@ def main():
         "Robustness版本": "RB-1.0",
         "成本敏感度情境": "0.30% / 0.60% / 1.00% 往返成本",
         "參數穩健性": "停損x持有期 + trailing啟動x幅度 + 年度穩定率",
+        "Regime版本": "RG-1.0",
+        "Regime資料": "TWII/NDX/SOX/VIX/USDTWD + 現存股票池breadth",
+        "Regime用途": "只做歷史條件化驗證，不用OOS結果重新挑參數",
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -578,6 +605,8 @@ def main():
     print(optimizer_shortlist.to_string(index=False))
     print("\n✅ Robustness scorecard")
     print(robustness_scorecard.head(20).to_string(index=False))
+    print("\n✅ Regime gate")
+    print(regime_gate.to_string(index=False))
 
 
 if __name__ == "__main__":
