@@ -14,6 +14,54 @@ NOTEBOOK_PATH = ROOT / "股市V1-V5.ipynb"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+
+
+_FINMIND_ASYNC_BROKEN = False
+
+
+def safe_finmind_batch(api, stock_ids, start_date, end_date):
+    """
+    FinMind 2.x 在 GitHub Actions 偶爾會出現 async 進度完成但回傳空 DataFrame。
+    第一批先嘗試 async；若確認為空，後續批次自動改為同步逐檔抓取。
+    """
+    global _FINMIND_ASYNC_BROKEN
+
+    if not _FINMIND_ASYNC_BROKEN:
+        try:
+            df = api.taiwan_stock_daily(
+                stock_id_list=list(stock_ids),
+                start_date=start_date,
+                end_date=end_date,
+                use_async=True,
+            )
+            if df is not None and not df.empty:
+                return df
+            print("⚠️ FinMind async 回傳空資料，切換同步備援模式")
+            _FINMIND_ASYNC_BROKEN = True
+        except Exception as e:
+            print(f"⚠️ FinMind async 失敗，切換同步備援模式：{str(e)[:120]}")
+            _FINMIND_ASYNC_BROKEN = True
+
+    frames = []
+    for stock_id in stock_ids:
+        try:
+            temp = api.taiwan_stock_daily(
+                stock_id=str(stock_id),
+                start_date=start_date,
+                end_date=end_date,
+                use_async=False,
+            )
+            if temp is not None and not temp.empty:
+                frames.append(temp)
+        except Exception as e:
+            msg = str(e)
+            print(f"同步備援抓取 {stock_id} 失敗：{msg[:100]}")
+            if "402" in msg or "upper limit" in msg.lower() or "request limit" in msg.lower():
+                raise
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def sanitize_code(source: str) -> str:
     source = "\n".join(
         line for line in source.splitlines()
@@ -28,6 +76,21 @@ def sanitize_code(source: str) -> str:
         'FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN", "").strip()\n'
         'if not FINMIND_TOKEN:\n'
         '    raise RuntimeError("缺少 FINMIND_TOKEN GitHub Secret")',
+        source,
+    )
+
+    # Notebook 原本使用 FinMind async 批次；GitHub Actions 偶爾會顯示下載完成
+    # 卻回傳空 DataFrame。自動改用帶同步備援的 wrapper。
+    batch_pattern = re.compile(
+        r'df\s*=\s*api\.taiwan_stock_daily\(\s*'
+        r'stock_id_list\s*=\s*batch\s*,\s*'
+        r'start_date\s*=\s*開始日期\s*,\s*'
+        r'end_date\s*=\s*結束日期\s*,\s*'
+        r'use_async\s*=\s*True\s*\)',
+        re.S,
+    )
+    source = batch_pattern.sub(
+        'df = safe_finmind_batch(api, batch, 開始日期, 結束日期)',
         source,
     )
     return source
@@ -1050,6 +1113,7 @@ def main() -> None:
         "__name__": "__main__",
         "__file__": str(NOTEBOOK_PATH),
         "os": os,
+        "safe_finmind_batch": safe_finmind_batch,
     }
 
     for idx, raw in enumerate(code_cells):
