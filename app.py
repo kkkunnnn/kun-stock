@@ -302,6 +302,124 @@ def backtest_summary(bt):
     return pd.DataFrame(rows)
 
 
+
+def score_bucket_analysis(bt, score_col, horizon):
+    ret_col = f"{horizon}日後報酬率"
+    if score_col not in bt.columns or ret_col not in bt.columns:
+        return pd.DataFrame()
+
+    d = bt[[score_col, ret_col]].copy()
+    d[score_col] = pd.to_numeric(d[score_col], errors="coerce")
+    d[ret_col] = pd.to_numeric(d[ret_col], errors="coerce")
+    d = d.dropna()
+
+    if d.empty:
+        return pd.DataFrame()
+
+    bins = [-np.inf, 50, 60, 70, 80, np.inf]
+    labels = ["<50", "50–59", "60–69", "70–79", "80+"]
+    d["分數區間"] = pd.cut(
+        d[score_col],
+        bins=bins,
+        labels=labels,
+        right=False,
+    )
+
+    out = (
+        d.groupby("分數區間", observed=False)[ret_col]
+        .agg(
+            樣本數="count",
+            平均報酬率="mean",
+            中位數報酬率="median",
+            標準差="std",
+        )
+        .reset_index()
+    )
+
+    win = (
+        d.assign(_win=d[ret_col] > 0)
+        .groupby("分數區間", observed=False)["_win"]
+        .mean()
+        .mul(100)
+        .reset_index(name="勝率")
+    )
+
+    out = out.merge(win, on="分數區間", how="left")
+    return out
+
+
+def score_predictive_table(bt, horizon):
+    ret_col = f"{horizon}日後報酬率"
+    if ret_col not in bt.columns:
+        return pd.DataFrame()
+
+    score_cols = [
+        ("最終分數", "V5 最終分數"),
+        ("技術分數", "V1 技術"),
+        ("籌碼標準分", "V2 籌碼"),
+        ("基本面分數", "V3 基本面"),
+        ("風險動能分數", "V4 風險動能"),
+    ]
+
+    rows = []
+    for col, label in score_cols:
+        if col not in bt.columns:
+            continue
+
+        x = pd.to_numeric(bt[col], errors="coerce")
+        y = pd.to_numeric(bt[ret_col], errors="coerce")
+        pair = pd.DataFrame({"x": x, "y": y}).dropna()
+
+        if len(pair) < 5:
+            continue
+
+        # Spearman = 對兩欄先排名後，再算 Pearson correlation
+        rho = pair["x"].rank().corr(pair["y"].rank())
+
+        high = pair[pair["x"] >= 80]["y"]
+        low = pair[pair["x"] < 60]["y"]
+
+        rows.append({
+            "構面": label,
+            "有效樣本": len(pair),
+            "Spearman相關": rho,
+            "80分以上平均報酬": high.mean() if len(high) else np.nan,
+            "60分以下平均報酬": low.mean() if len(low) else np.nan,
+            "高低分報酬差": (
+                high.mean() - low.mean()
+                if len(high) and len(low)
+                else np.nan
+            ),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def bucket_chart(bucket_df, title):
+    if bucket_df.empty:
+        return None
+
+    f = go.Figure()
+    f.add_trace(
+        go.Bar(
+            x=bucket_df["分數區間"].astype(str),
+            y=bucket_df["平均報酬率"],
+            name="平均報酬率",
+            text=bucket_df["平均報酬率"].round(2),
+            textposition="outside",
+        )
+    )
+    f.update_layout(
+        height=360,
+        title=title,
+        xaxis_title="分數區間",
+        yaxis_title="後續平均報酬率 (%)",
+        margin=dict(l=15, r=15, t=45, b=20),
+    )
+    return f
+
+
+
 def base_date(sheets, filename):
     d = sheets.get("系統說明")
     if d is not None and not d.empty and {"項目","說明"}.issubset(d.columns):
@@ -544,6 +662,73 @@ elif page == "V6 回測":
                 cols=[c for c in ["快照日期","股票代號","股票名稱","排名","最終分數","1日後報酬率","5日後報酬率","20日後報酬率"] if c in top_bt.columns]
                 if cols:
                     table(top_bt.sort_values(["快照日期","排名"],ascending=[False,True])[cols].head(100),height=460)
+
+                st.markdown("### V6.1 分數區間績效分析")
+                st.caption("用實際後續報酬檢查：高分區間是否真的比低分區間表現更好。樣本數太少時先不要解讀。")
+
+                v61a,v61b = st.columns(2)
+                horizon = v61a.selectbox(
+                    "驗證持有期間",
+                    [1,5,20],
+                    format_func=lambda x: f"{x} 交易日",
+                    key="v61_horizon",
+                )
+                component_map = {
+                    "V5 最終分數":"最終分數",
+                    "V1 技術":"技術分數",
+                    "V2 籌碼":"籌碼標準分",
+                    "V3 基本面":"基本面分數",
+                    "V4 風險動能":"風險動能分數",
+                }
+                component_label = v61b.selectbox(
+                    "分析哪個分數",
+                    list(component_map.keys()),
+                    key="v61_component",
+                )
+                component_col = component_map[component_label]
+
+                bucket = score_bucket_analysis(bt, component_col, horizon)
+
+                if bucket.empty:
+                    st.info("目前還沒有足夠資料進行分數區間分析。")
+                else:
+                    show_bucket = bucket.copy()
+                    for c in ["平均報酬率","中位數報酬率","標準差","勝率"]:
+                        if c in show_bucket.columns:
+                            show_bucket[c] = show_bucket[c].round(2)
+
+                    c1,c2 = st.columns([1.05,1])
+                    with c1:
+                        fig_bucket = bucket_chart(
+                            bucket,
+                            f"{component_label}：{horizon}日後平均報酬",
+                        )
+                        if fig_bucket is not None:
+                            st.plotly_chart(fig_bucket,use_container_width=True)
+
+                    with c2:
+                        table(show_bucket,height=360)
+
+                    small_groups = bucket[bucket["樣本數"] < 20]
+                    if not small_groups.empty:
+                        st.warning("部分分數區間樣本少於 20 筆，目前只能視為初步觀察，不能據此調整權重。")
+
+                st.markdown("### V1～V5 哪個分數與未來報酬關聯較高？")
+                predictive = score_predictive_table(bt, horizon)
+
+                if predictive.empty:
+                    st.info("目前樣本不足，尚不能比較各構面的預測關聯。")
+                else:
+                    show_pred = predictive.copy()
+                    for c in ["Spearman相關","80分以上平均報酬","60分以下平均報酬","高低分報酬差"]:
+                        if c in show_pred.columns:
+                            show_pred[c] = show_pred[c].round(3 if c=="Spearman相關" else 2)
+                    table(show_pred,height=300)
+
+                    st.caption(
+                        "Spearman相關 > 0 代表分數越高時，後續報酬傾向越高；"
+                        "接近 0 代表關聯弱。這不是因果關係，也不應在少量樣本下直接改權重。"
+                    )
 
                 st.warning("目前 V6 是『前瞻式驗證』：從系統開始每天保存排名後累積樣本。這可避免用今天知道的資料回填過去，降低前視偏誤。")
 
