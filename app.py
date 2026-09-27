@@ -253,6 +253,24 @@ def load_history():
         return pd.DataFrame()
 
 
+
+
+@st.cache_data(show_spinner=False)
+def load_price_archive():
+    p = DATA_DIR / "price_history_archive.csv"
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        d = pd.read_csv(p, dtype={"股票代號": str})
+        if "股票代號" in d.columns:
+            d["股票代號"] = d["股票代號"].astype(str).str.replace(".0","",regex=False).str.zfill(4)
+        if "日期" in d.columns:
+            d["日期"] = pd.to_datetime(d["日期"], errors="coerce")
+        return d
+    except Exception:
+        return pd.DataFrame()
+
+
 def history_price_chart(d):
     f = go.Figure()
     if "收盤價" in d.columns:
@@ -619,6 +637,7 @@ def table(df, height=500):
 css()
 sheets, source = load_data()
 history_all = load_history()
+price_archive_all = load_price_archive()
 ranking_history_all = load_ranking_history()
 weekly_model_all = load_weekly_model()
 domestic_market_summary = load_domestic_market()
@@ -940,7 +959,8 @@ elif page == "V6 回測":
         dates = ranking_history_all["快照日期"].dropna().dt.date.nunique()
         st.metric("已累積交易日", f"{dates} 日")
 
-        bt = attach_forward_returns(ranking_history_all, history_all)
+        backtest_prices = price_archive_all if not price_archive_all.empty else history_all
+        bt = attach_forward_returns(ranking_history_all, backtest_prices)
 
         if bt.empty:
             st.info("已有排名歷史，但尚未累積足夠後續價格來計算報酬。")
