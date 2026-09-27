@@ -453,26 +453,23 @@ def ai_trade_plan_chart(hist, plan):
         d = d.sort_values("日期").tail(80)
 
     f = history_price_chart(d)
-    f.update_layout(title="AI 操作教練：價格、均線與關鍵區間")
-
-    for label, key in [
-        ("短期支撐", "短期支撐"),
-        ("長期支撐", "長期支撐"),
-        ("短期壓力", "短期壓力"),
-        ("長期壓力", "長期壓力"),
-        ("停損失效", "停損失效價"),
-    ]:
-        v = plan.get(key)
-        if pd.notna(v):
-            f.add_hline(y=v, line_dash="dot", annotation_text=f"{label} {v:.2f}")
+    f.update_layout(
+        title="AI 操作教練：價格與均線",
+        margin=dict(l=15,r=15,t=45,b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
 
     low = plan.get("觀察買入下緣")
     high = plan.get("觀察買入上緣")
     if pd.notna(low) and pd.notna(high):
-        f.add_hrect(y0=min(low, high), y1=max(low, high), opacity=0.10, line_width=0, annotation_text="觀察買入區")
+        f.add_hrect(
+            y0=min(low, high),
+            y1=max(low, high),
+            opacity=0.08,
+            line_width=0,
+        )
 
     return f
-
 
 def history_price_chart(d):
     f = go.Figure()
@@ -1340,31 +1337,33 @@ elif page == "個股分析":
         st.markdown(f"**模型操作狀態：{plan['操作狀態']}**　｜　{plan['策略']}")
         st.caption(plan["說明"])
 
-        a1,a2,a3,a4 = st.columns(4)
-        a1.metric("觀察買入區", f"{fmt(plan['觀察買入下緣'],2)} ～ {fmt(plan['觀察買入上緣'],2)}")
-        a2.metric("停損 / 失效", fmt(plan["停損失效價"],2))
-        a3.metric("短期壓力", fmt(plan["短期壓力"],2))
-        a4.metric("長期壓力", fmt(plan["長期壓力"],2))
+        chart_col, info_col = st.columns([2.35, 1])
 
-        b1,b2,b3,b4 = st.columns(4)
-        b1.metric("短期支撐", fmt(plan["短期支撐"],2))
-        b2.metric("長期支撐", fmt(plan["長期支撐"],2))
-        b3.metric("風險幅度", fmt(plan["估計風險幅度%"],1,"%"))
-        b4.metric("第一壓力風報比", fmt(plan["第一目標風報比"],2))
+        with chart_col:
+            coach_fig = ai_trade_plan_chart(coach_hist, plan)
+            if coach_fig is not None:
+                st.plotly_chart(coach_fig, use_container_width=True)
 
-        st.caption(
-            f"短期支撐來源：{plan['短期支撐來源']} ｜ 長期支撐來源：{plan['長期支撐來源']} ｜ "
-            f"短期壓力來源：{plan['短期壓力來源']} ｜ 長期壓力來源：{plan['長期壓力來源']}"
-        )
+        with info_col:
+            st.markdown("#### 關鍵價位")
+            st.metric("觀察買入區", f"{fmt(plan['觀察買入下緣'],2)} ～ {fmt(plan['觀察買入上緣'],2)}")
+            st.metric("停損 / 失效", fmt(plan["停損失效價"],2))
 
-        coach_fig = ai_trade_plan_chart(coach_hist, plan)
-        if coach_fig is not None:
-            st.plotly_chart(coach_fig, use_container_width=True)
+            st.markdown("**支撐**")
+            st.write(f"短期：**{fmt(plan['短期支撐'],2)}**　{plan['短期支撐來源']}")
+            st.write(f"長期：**{fmt(plan['長期支撐'],2)}**　{plan['長期支撐來源']}")
+
+            st.markdown("**壓力**")
+            st.write(f"短期：**{fmt(plan['短期壓力'],2)}**　{plan['短期壓力來源']}")
+            st.write(f"長期：**{fmt(plan['長期壓力'],2)}**　{plan['長期壓力來源']}")
+
+            st.markdown("**風險 / 報酬**")
+            st.write(f"風險幅度：**{fmt(plan['估計風險幅度%'],1,'%')}**")
+            st.write(f"第一壓力風報比：**{fmt(plan['第一目標風報比'],2)}**")
 
         st.info(
             "操作方式：若模型為『可觀察進場』，優先等價格進入觀察買入區再分批評估；"
-            "跌破停損/失效價代表原本的短線結構被破壞。壓力與支撐都是動態技術位，"
-            "會隨每日行情重新計算，不是保證成交或獲利的價位。"
+            "跌破停損/失效價代表原本的短線結構被破壞。右側價位會隨每日行情重新計算。"
         )
 
     st.markdown("### 原始 V5-A")
