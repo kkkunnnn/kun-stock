@@ -866,44 +866,69 @@ elif page == "全球市場":
     st.caption("產業海外順風分數會依台股產業映射不同海外龍頭，例如半導體會看 SOX、TSM、NVDA、AMD、AVGO、MU；蘋果鏈與電子零組件則會提高 AAPL 的參考權重。")
 
 elif page == "每日變化":
-    st.markdown("## 每日排名變化")
-    if daily_change.empty:
-        st.info("目前只有一天的 Excel。保留今天這份檔案，明天再把新的日期 Excel 上傳到 data 資料夾後，這裡就會自動出現昨日 vs 今日比較。")
+    st.markdown("## 每日變化")
+
+    st.markdown("### 一週模型變化")
+    if weekly_daily_change.empty:
+        st.info("一週模型目前還沒有兩個交易日的歷史。等下一個交易日自動累積後，這裡就會開始比較。")
     else:
-        st.caption(f"今日：{source} ｜ 前一份：{previous_source}")
+        new_top=weekly_daily_change[weekly_daily_change.get("新進一週Top10",False)==True].copy()
+        new_entry=weekly_daily_change[weekly_daily_change.get("新進可觀察進場",False)==True].copy()
+        risers=weekly_daily_change.copy()
+        if "一週排名變化" in risers.columns:
+            risers=risers[pd.to_numeric(risers["一週排名變化"],errors="coerce")>0]
+            risers=risers.sort_values("一週排名變化",ascending=False).head(15)
 
-        new_top = daily_change[daily_change.get("新進Top10", False) == True].copy()
-        new_strong = daily_change[daily_change.get("新進強勢", False) == True].copy()
+        c1,c2,c3=st.columns(3)
+        c1.metric("新進一週 Top10",f"{len(new_top)} 檔")
+        c2.metric("新進可觀察進場",f"{len(new_entry)} 檔")
+        c3.metric("排名上升",f"{len(risers)} 檔")
 
-        c1,c2,c3 = st.columns(3)
-        c1.metric("新進 Top 10", f"{len(new_top)} 檔")
-        c2.metric("新進強勢候選", f"{len(new_strong)} 檔")
-        up_count = int((pd.to_numeric(daily_change.get("排名變化"), errors="coerce") > 0).sum()) if "排名變化" in daily_change.columns else 0
-        c3.metric("排名上升", f"{up_count} 檔")
-
-        st.markdown("### 排名上升最多")
-        risers = daily_change.copy()
-        if "排名變化" in risers.columns:
-            risers = risers[pd.to_numeric(risers["排名變化"], errors="coerce") > 0]
-            risers = risers.sort_values(["排名變化","分數變化"], ascending=[False,False]).head(10)
-        cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","排名變化","最終分數","昨日最終分數","分數變化","目前狀態"] if c in risers.columns]
-        table(risers[cols], height=390)
-
-        st.markdown("### 今日新進 Top 10")
-        if new_top.empty:
-            st.caption("今天沒有新進 Top 10。")
+        st.markdown("#### 一週排名上升最多")
+        cols=[c for c in [
+            "股票代號","股票名稱","一週模型排名","昨日一週排名","一週排名變化",
+            "一週起漲分數","進場時機分數","啟動階段","進場判定"
+        ] if c in risers.columns]
+        if cols and not risers.empty:
+            table(risers[cols],height=420)
         else:
-            cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數","分數變化","候選等級","目前狀態"] if c in new_top.columns]
-            table(new_top[cols], height=300)
+            st.caption("目前沒有排名上升資料。")
 
-        st.markdown("### 今日新進強勢候選")
-        if new_strong.empty:
-            st.caption("今天沒有新進強勢候選。")
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown("#### 🔥 新進一週 Top10")
+            if new_top.empty:
+                st.caption("今天沒有。")
+            else:
+                cols=[c for c in [
+                    "股票代號","股票名稱","一週模型排名","昨日一週排名",
+                    "一週起漲分數","進場時機分數","進場判定"
+                ] if c in new_top.columns]
+                table(new_top[cols],height=300)
+        with c2:
+            st.markdown("#### 🟢 新進可觀察進場")
+            if new_entry.empty:
+                st.caption("今天沒有。")
+            else:
+                cols=[c for c in [
+                    "股票代號","股票名稱","一週模型排名",
+                    "一週起漲分數","進場時機分數","啟動階段"
+                ] if c in new_entry.columns]
+                table(new_entry[cols],height=300)
+
+    with st.expander("查看原始 V5-A 的昨日 vs 今日"):
+        if daily_change.empty:
+            st.caption("原始模型目前也沒有兩天可比較的資料。")
         else:
-            cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數","分數變化","候選等級","昨日候選等級","目前狀態"] if c in new_strong.columns]
-            table(new_strong[cols], height=300)
-
-
+            risers=daily_change.copy()
+            if "排名變化" in risers.columns:
+                risers=risers[pd.to_numeric(risers["排名變化"],errors="coerce")>0].sort_values("排名變化",ascending=False).head(15)
+            cols=[c for c in [
+                "股票代號","股票名稱","排名","昨日排名","排名變化",
+                "最終分數","昨日最終分數","分數變化","目前狀態"
+            ] if c in risers.columns]
+            if cols:
+                table(risers[cols],height=380)
 
 elif page == "V6 回測":
     st.markdown("## V6 回測與模型驗證")
