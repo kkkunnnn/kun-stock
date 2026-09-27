@@ -821,10 +821,14 @@ def load_walkforward_validation():
     summary_path = DATA_DIR / "walkforward_summary.csv"
     metadata_path = DATA_DIR / "walkforward_metadata.csv"
     results_path = DATA_DIR / "walkforward_results.csv"
+    exit_summary_path = DATA_DIR / "walkforward_exit_summary.csv"
+    exit_trades_path = DATA_DIR / "walkforward_exit_trades.csv"
 
     summary = pd.DataFrame()
     metadata = pd.DataFrame()
     results = pd.DataFrame()
+    exit_summary = pd.DataFrame()
+    exit_trades = pd.DataFrame()
 
     try:
         if summary_path.exists():
@@ -846,7 +850,22 @@ def load_walkforward_validation():
     except Exception:
         results = pd.DataFrame()
 
-    return summary, metadata, results
+    try:
+        if exit_summary_path.exists():
+            exit_summary = pd.read_csv(exit_summary_path)
+    except Exception:
+        exit_summary = pd.DataFrame()
+
+    try:
+        if exit_trades_path.exists():
+            exit_trades = pd.read_csv(exit_trades_path, dtype={"stock_id": str})
+            for c in ["signal_date","entry_date","exit_date"]:
+                if c in exit_trades.columns:
+                    exit_trades[c] = pd.to_datetime(exit_trades[c], errors="coerce")
+    except Exception:
+        exit_trades = pd.DataFrame()
+
+    return summary, metadata, results, exit_summary, exit_trades
 
 
 def load_global_market():
@@ -967,7 +986,7 @@ ranking_history_all = load_ranking_history()
 weekly_model_all = load_weekly_model()
 domestic_market_summary = load_domestic_market()
 global_market_detail, global_market_summary = load_global_market()
-walkforward_summary, walkforward_metadata, walkforward_results = load_walkforward_validation()
+walkforward_summary, walkforward_metadata, walkforward_results, walkforward_exit_summary, walkforward_exit_trades = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -1289,6 +1308,62 @@ elif page == "專業驗證":
                     "另外這一版只驗證核心價格型態模型，尚未完整重建歷史法人與基本面因子。"
                     "這些限制必須在對外專業報告中揭露。"
                 )
+
+
+        st.markdown("### Exit Model / 完整交易模擬")
+        st.caption(
+            "這一層把 Walk-forward 訊號轉成真正的交易：訊號後下一交易日開盤進場，"
+            "比較不同停損 / 停利 / 移動停利規則，並扣除設定的往返交易摩擦。"
+        )
+
+        if walkforward_exit_summary.empty:
+            st.info(
+                "目前尚未產生 Exit Model 結果。請重新執行一次 "
+                "『Historical Walk-Forward Validation』，新版流程會一起產生出場策略比較。"
+            )
+        else:
+            exit_show = walkforward_exit_summary.copy()
+            for c in [
+                "平均淨報酬","中位數淨報酬","勝率","Profit Factor",
+                "中位持有天數","最大單筆虧損","10分位淨報酬",
+                "+20%實現率","+30%實現率","+50%實現率","MFE捕捉率中位數"
+            ]:
+                if c in exit_show.columns:
+                    exit_show[c] = pd.to_numeric(exit_show[c], errors="coerce").round(2)
+
+            top10_exit = exit_show[exit_show["群組"].eq("Top 10")].copy()
+            if not top10_exit.empty:
+                st.markdown("#### Top 10：不同出場規則")
+                sort_pf = pd.to_numeric(top10_exit["Profit Factor"], errors="coerce")
+                top10_exit = top10_exit.assign(_pf=sort_pf).sort_values(
+                    ["_pf","中位數淨報酬"], ascending=[False,False]
+                ).drop(columns="_pf")
+                table(top10_exit, height=360)
+
+                valid_pf = pd.to_numeric(top10_exit["Profit Factor"], errors="coerce")
+                if valid_pf.notna().any():
+                    best = top10_exit.iloc[0]
+                    b1,b2,b3,b4 = st.columns(4)
+                    b1.metric("目前較佳策略", str(best.get("策略","—")))
+                    b2.metric("Profit Factor", fmt(best.get("Profit Factor"),2))
+                    b3.metric("中位數淨報酬", fmt(best.get("中位數淨報酬"),2,"%"))
+                    b4.metric("勝率", fmt(best.get("勝率"),1,"%"))
+
+            st.markdown("#### 全部 Top-K / Exit Strategy")
+            table(exit_show, height=520)
+
+            if not walkforward_metadata.empty:
+                md = walkforward_metadata.iloc[0]
+                st.caption(
+                    f"進場假設：{md.get('出場回測進場','—')} ｜ "
+                    f"交易摩擦：{md.get('出場回測交易摩擦假設','—')} ｜ "
+                    f"同日同時觸發：{md.get('同日停損與停利皆觸發','—')}"
+                )
+
+            st.warning(
+                "這裡的『目前較佳策略』只代表這批 walk-forward 歷史樣本中的相對結果，"
+                "不能直接當成未來保證。專業版本後續還要做不同年代 / regime、參數敏感度與成本敏感度測試。"
+            )
 
 elif page == "一週模型":
     st.markdown("## 1～2 個月波段爆發＋進場時機模型")
