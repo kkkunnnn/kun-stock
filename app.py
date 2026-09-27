@@ -925,11 +925,38 @@ def load_walkforward_validation():
     except Exception:
         robustness_scorecard = pd.DataFrame()
 
+    regime_signal_path = DATA_DIR / "walkforward_regime_signal_summary.csv"
+    regime_exit_path = DATA_DIR / "walkforward_regime_exit_summary.csv"
+    regime_gate_path = DATA_DIR / "walkforward_regime_gate.csv"
+
+    regime_signal = pd.DataFrame()
+    regime_exit = pd.DataFrame()
+    regime_gate = pd.DataFrame()
+
+    try:
+        if regime_signal_path.exists():
+            regime_signal = pd.read_csv(regime_signal_path)
+    except Exception:
+        regime_signal = pd.DataFrame()
+
+    try:
+        if regime_exit_path.exists():
+            regime_exit = pd.read_csv(regime_exit_path)
+    except Exception:
+        regime_exit = pd.DataFrame()
+
+    try:
+        if regime_gate_path.exists():
+            regime_gate = pd.read_csv(regime_gate_path)
+    except Exception:
+        regime_gate = pd.DataFrame()
+
     return (
         summary, metadata, results, exit_summary, exit_trades,
         optimizer, optimizer_shortlist, optimizer_yearly,
         robustness_stop_hold, robustness_trailing,
-        robustness_cost, robustness_scorecard
+        robustness_cost, robustness_scorecard,
+        regime_signal, regime_exit, regime_gate
     )
 
 
@@ -1064,6 +1091,9 @@ global_market_detail, global_market_summary = load_global_market()
     walkforward_robustness_trailing,
     walkforward_robustness_cost,
     walkforward_robustness_scorecard,
+    walkforward_regime_signal,
+    walkforward_regime_exit,
+    walkforward_regime_gate,
 ) = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
@@ -1709,6 +1739,66 @@ elif page == "專業驗證":
             "看到一個參數點特別高，不代表它可靠。真正值得保留的是："
             "附近參數也有效、成本提高後仍有效、OOS 不崩壞、且多個年份 PF 仍大於 1。"
         )
+
+
+        st.markdown("### Regime Filter / 市場環境驗證")
+        st.caption(
+            "這一層檢查 Top10 在不同市場環境下是否仍有 edge。"
+            "Regime 使用當時可得的 TWII / Nasdaq100 / SOX / VIX / USD/TWD 與市場 breadth，"
+            "不使用未來資料。"
+        )
+
+        if walkforward_regime_gate.empty:
+            st.info(
+                "尚未產生 Regime 結果。請重新執行一次 Historical Walk-Forward Validation。"
+            )
+        else:
+            gate = walkforward_regime_gate.copy()
+            for c in [
+                "40日+50%命中率","40日MFE中位數","40日MAE中位數",
+                "Regime分數中位數","平均淨報酬","Profit Factor","勝率","10分位淨報酬"
+            ]:
+                if c in gate.columns:
+                    gate[c] = pd.to_numeric(gate[c], errors="coerce").round(2)
+
+            st.markdown("#### Top10 × 市場環境")
+            table(gate, height=330)
+
+            if "研究判定" in gate.columns:
+                counts = gate["研究判定"].value_counts()
+                g1,g2,g3 = st.columns(3)
+                g1.metric("歷史順風 Regime", int(counts.get("歷史順風",0)))
+                g2.metric("中性觀察 Regime", int(counts.get("中性觀察",0)))
+                g3.metric("歷史逆風 Regime", int(counts.get("歷史逆風",0)))
+
+            st.markdown("#### Top5 / Top10 / Top20 Regime 命中率")
+            if not walkforward_regime_signal.empty:
+                rs = walkforward_regime_signal.copy()
+                for c in [
+                    "40日+20%命中率","40日+30%命中率","40日+50%命中率",
+                    "40日MFE中位數","40日MAE中位數","40日報酬中位數",
+                    "國內分數中位數","全球分數中位數","Regime分數中位數"
+                ]:
+                    if c in rs.columns:
+                        rs[c] = pd.to_numeric(rs[c], errors="coerce").round(2)
+                table(rs, height=430)
+
+            st.markdown("#### 基準 Exit Strategy × Regime")
+            if not walkforward_regime_exit.empty:
+                re = walkforward_regime_exit.copy()
+                for c in [
+                    "平均淨報酬","中位數淨報酬","勝率",
+                    "Profit Factor","10分位淨報酬","毛+30%實現率","毛+50%實現率"
+                ]:
+                    if c in re.columns:
+                        re[c] = pd.to_numeric(re[c], errors="coerce").round(2)
+                table(re, height=300)
+
+            st.warning(
+                "Regime 結果目前只用來判斷『何時應提高或降低信心』，"
+                "不會直接用 OOS 結果重新訓練或改排行榜。"
+                "等確認不同市場環境下的差異穩定，再考慮把 Regime Gate 正式接回主模型。"
+            )
 
 elif page == "一週模型":
     st.markdown("## 1～2 個月波段爆發＋進場時機模型")
