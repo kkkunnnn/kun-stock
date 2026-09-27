@@ -700,14 +700,89 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         if pd.notna(ret60) and 10 <= ret60 <= 50:
             breakout_bonus += 5
 
+        # 40 交易日 +50% 候選主分數
+        # 方向：突破強度、持續動能、法人流、波動空間、相對小型/活躍股特徵。
+        # 基本面只作最低品質保護，不再給過高權重，以免大型成熟股壟斷排名。
+        breakout_score = 0.0
+        if recent_breakout:
+            breakout_score += 35
+        elif near_breakout:
+            breakout_score += 20
+        if ma_cross:
+            breakout_score += 15
+        if macd_cross:
+            breakout_score += 15
+        if hist_accel:
+            breakout_score += 10
+        if pd.notna(vol_ratio):
+            if 1.5 <= vol_ratio <= 4.0:
+                breakout_score += 25
+            elif 1.15 <= vol_ratio < 1.5:
+                breakout_score += 12
+        breakout_score = min(100.0, breakout_score)
+
+        persistence_score = 0.0
+        if pd.notna(ret5):
+            if 3 <= ret5 <= 12:
+                persistence_score += 30
+            elif 0 < ret5 < 3 or 12 < ret5 <= 18:
+                persistence_score += 15
+        if pd.notna(ret20):
+            if 8 <= ret20 <= 30:
+                persistence_score += 35
+            elif 3 <= ret20 < 8 or 30 < ret20 <= 45:
+                persistence_score += 18
+        if pd.notna(ret60):
+            if 12 <= ret60 <= 55:
+                persistence_score += 25
+            elif 5 <= ret60 < 12:
+                persistence_score += 12
+        if ma20_rising:
+            persistence_score += 10
+        persistence_score = min(100.0, persistence_score)
+
+        # 活躍度 / 爆發性代理：成交額不宜太小，但極大型成熟股也不額外加分。
+        turnover = _safe_num(row.get("Trading_turnover"))
+        money = _safe_num(row.get("Trading_money"))
+        activity_score = 0.0
+        if pd.notna(money):
+            if 80_000_000 <= money <= 3_000_000_000:
+                activity_score += 45
+            elif 30_000_000 <= money < 80_000_000 or 3_000_000_000 < money <= 8_000_000_000:
+                activity_score += 25
+        if pd.notna(turnover):
+            if 800 <= turnover <= 12000:
+                activity_score += 35
+            elif 300 <= turnover < 800 or 12000 < turnover <= 25000:
+                activity_score += 18
+        if pd.notna(vol_ratio) and 1.3 <= vol_ratio <= 4.0:
+            activity_score += 20
+        activity_score = min(100.0, activity_score)
+
+        # 基本品質只當保護層：太差扣分，普通以上即可。
+        quality_gate = 100.0
+        if quality < 35:
+            quality_gate = 55.0
+        elif quality < 45:
+            quality_gate = 75.0
+
         swing_power = (
-            tech_start * 0.24
-            + chip * 0.22
-            + quality * 0.10
-            + momentum * 0.24
-            + volatility_potential * 0.20
-            + breakout_bonus
+            breakout_score * 0.30
+            + persistence_score * 0.24
+            + chip * 0.18
+            + volatility_potential * 0.16
+            + activity_score * 0.12
         )
+        swing_power *= quality_gate / 100.0
+
+        # 避免已經過度噴出才追：過熱扣分，但不是完全排除強勢股。
+        if pd.notna(rsi) and rsi >= 78:
+            swing_power -= 8
+        if pd.notna(bias20) and bias20 >= 15:
+            swing_power -= 10
+        if pd.notna(ret5) and ret5 >= 20:
+            swing_power -= 8
+
         swing_power = max(0.0, min(100.0, swing_power))
 
         industry_score = industry_tailwind_score(row.get("產業別", ""), global_df)
@@ -730,9 +805,8 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         entry = one_week + market_adjustment + stage_adjustment - risk_penalty
         entry = max(0.0, min(100.0, entry))
 
-        # 單一主模型：65% 看 1～2 月爆發潛力，35% 看現在是否適合進場。
-        # 市場 / 產業順風與風險已經透過 entry 反映，因此不重複加權。
-        main_score = swing_power * 0.65 + entry * 0.35
+        # 單一主模型：目標就是 40 交易日內的大波段，進場時機只佔 20%。
+        main_score = swing_power * 0.80 + entry * 0.20
         if stage == "⑤ 過熱":
             main_score -= 8
         elif stage == "⑥ 轉弱":
@@ -771,6 +845,9 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
             "價格動能分數": round(momentum, 2),
             "一週起漲分數": round(one_week, 2),
             "波段爆發分數": round(swing_power, 2),
+            "突破強度分數": round(breakout_score, 2),
+            "動能持續分數": round(persistence_score, 2),
+            "活躍爆發分數": round(activity_score, 2),
             "波動爆發潛力": round(volatility_potential, 2),
             "主模型分數": round(main_score, 2),
             "50%潛力判定": swing_label,
@@ -979,7 +1056,8 @@ def main() -> None:
             "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
             "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
             "一週模型排名", "主模型排名", "起漲潛力排名", "波段爆發排名",
-            "一週起漲分數", "波段爆發分數", "波動爆發潛力", "主模型分數", "50%潛力判定", "進場時機分數",
+            "一週起漲分數", "波段爆發分數", "突破強度分數", "動能持續分數", "活躍爆發分數",
+            "波動爆發潛力", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
             "風險扣分", "啟動階段", "進場判定",
             "全球環境分數", "台股環境分數", "產業海外順風分數",
