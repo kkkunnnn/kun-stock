@@ -7,7 +7,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from exit_optimizer import simulate_grid, summarize_optimizer
+from exit_optimizer import (
+    simulate_grid,
+    summarize_optimizer,
+    build_robustness_tables,
+    build_robustness_scorecard,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -519,6 +524,15 @@ def main():
         optimizer_trades,
         split_date="2025-01-01",
     )
+    robustness_stop_hold, robustness_trailing, robustness_cost = build_robustness_tables(
+        optimizer_trades,
+        split_date="2025-01-01",
+        cost_scenarios=(0.30, 0.60, 1.00),
+    )
+    robustness_scorecard = build_robustness_scorecard(
+        optimizer_summary,
+        optimizer_yearly,
+    )
 
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
@@ -528,6 +542,10 @@ def main():
     optimizer_summary.to_csv(DATA_DIR / "walkforward_exit_optimizer.csv", index=False, encoding="utf-8-sig")
     optimizer_shortlist.to_csv(DATA_DIR / "walkforward_exit_optimizer_shortlist.csv", index=False, encoding="utf-8-sig")
     optimizer_yearly.to_csv(DATA_DIR / "walkforward_exit_optimizer_yearly.csv", index=False, encoding="utf-8-sig")
+    robustness_stop_hold.to_csv(DATA_DIR / "walkforward_robustness_stop_hold.csv", index=False, encoding="utf-8-sig")
+    robustness_trailing.to_csv(DATA_DIR / "walkforward_robustness_trailing.csv", index=False, encoding="utf-8-sig")
+    robustness_cost.to_csv(DATA_DIR / "walkforward_robustness_cost.csv", index=False, encoding="utf-8-sig")
+    robustness_scorecard.to_csv(DATA_DIR / "walkforward_robustness_scorecard.csv", index=False, encoding="utf-8-sig")
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
@@ -545,6 +563,9 @@ def main():
         "Exit Optimizer版本": "EO-1.0",
         "Exit Optimizer開發/OOS切點": "2025-01-01",
         "Exit Optimizer原則": "只用開發期排名出場策略，OOS期只驗證不參與挑選",
+        "Robustness版本": "RB-1.0",
+        "成本敏感度情境": "0.30% / 0.60% / 1.00% 往返成本",
+        "參數穩健性": "停損x持有期 + trailing啟動x幅度 + 年度穩定率",
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -555,6 +576,8 @@ def main():
     print(exit_summary.to_string(index=False))
     print("\n✅ Exit Optimizer shortlist")
     print(optimizer_shortlist.to_string(index=False))
+    print("\n✅ Robustness scorecard")
+    print(robustness_scorecard.head(20).to_string(index=False))
 
 
 if __name__ == "__main__":
