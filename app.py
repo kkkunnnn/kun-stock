@@ -269,6 +269,211 @@ def load_price_archive():
         return pd.DataFrame()
 
 
+
+
+def _first_existing(df, names):
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
+
+
+def build_ai_trade_plan(hist, row):
+    """依價格結構、均線、近期高低點與 ATR 產生機械化交易觀察計畫。"""
+    if hist is None or hist.empty:
+        return {}
+
+    d = hist.copy()
+    if "日期" in d.columns:
+        d["日期"] = pd.to_datetime(d["日期"], errors="coerce")
+        d = d.sort_values("日期")
+
+    close_col = _first_existing(d, ["收盤價", "close", "Close"])
+    high_col = _first_existing(d, ["最高價", "max", "high", "High"])
+    low_col = _first_existing(d, ["最低價", "min", "low", "Low"])
+
+    if close_col is None:
+        return {}
+
+    close_s = pd.to_numeric(d[close_col], errors="coerce").dropna()
+    if close_s.empty:
+        return {}
+
+    current = float(close_s.iloc[-1])
+
+    def last_num(col):
+        if col in d.columns:
+            x = pd.to_numeric(d[col], errors="coerce").dropna()
+            if not x.empty:
+                return float(x.iloc[-1])
+        return np.nan
+
+    ma5 = last_num("5日均線")
+    ma20 = last_num("20日均線")
+    ma60 = last_num("60日均線")
+    atr = row.get("ATR14", np.nan)
+    try:
+        atr = float(atr)
+    except Exception:
+        atr = np.nan
+    if pd.isna(atr) or atr <= 0:
+        atr_pct = row.get("ATR百分比", np.nan)
+        try:
+            atr = current * float(atr_pct) / 100
+        except Exception:
+            atr = current * 0.025
+
+    highs = pd.to_numeric(d[high_col], errors="coerce") if high_col else pd.Series(index=d.index, dtype=float)
+    lows = pd.to_numeric(d[low_col], errors="coerce") if low_col else pd.Series(index=d.index, dtype=float)
+
+    h10 = float(highs.tail(10).max()) if high_col and highs.tail(10).notna().any() else np.nan
+    h20 = float(highs.tail(20).max()) if high_col and highs.tail(20).notna().any() else np.nan
+    h60 = float(highs.tail(60).max()) if high_col and highs.tail(60).notna().any() else np.nan
+    l10 = float(lows.tail(10).min()) if low_col and lows.tail(10).notna().any() else np.nan
+    l20 = float(lows.tail(20).min()) if low_col and lows.tail(20).notna().any() else np.nan
+    l60 = float(lows.tail(60).min()) if low_col and lows.tail(60).notna().any() else np.nan
+
+    # 短線支撐：選「現價下方且最接近現價」的技術位。
+    support_candidates = [
+        ("MA5", ma5), ("MA20", ma20), ("10日低點", l10), ("20日低點", l20)
+    ]
+    support_candidates = [(n,v) for n,v in support_candidates if pd.notna(v) and v < current]
+    if support_candidates:
+        short_support_name, short_support = max(support_candidates, key=lambda x: x[1])
+    else:
+        short_support_name, short_support = "ATR動態支撐", current - atr
+
+    # 長線支撐：優先使用 MA60；若 MA60 不在現價下方則退回 60 日低點。
+    if pd.notna(ma60) and ma60 < current:
+        long_support_name, long_support = "MA60", ma60
+    elif pd.notna(l60) and l60 < current:
+        long_support_name, long_support = "60日低點", l60
+    else:
+        long_support_name, long_support = "ATR延伸支撐", current - 2 * atr
+
+    # 壓力：找現價上方最近的近期高點；若已創波段新高則用 ATR 延伸作動態參考。
+    resistance_candidates = [
+        ("10日高點", h10), ("20日高點", h20), ("60日高點", h60)
+    ]
+    resistance_candidates = [(n,v) for n,v in resistance_candidates if pd.notna(v) and v > current * 1.002]
+    if resistance_candidates:
+        short_res_name, short_res = min(resistance_candidates, key=lambda x: x[1])
+    else:
+        short_res_name, short_res = "ATR動態壓力", current + atr
+
+    if pd.notna(h60) and h60 > short_res * 1.002:
+        long_res_name, long_res = "60日高點", h60
+    else:
+        long_res_name, long_res = "2ATR動態壓力", max(short_res + atr, current + 2 * atr)
+
+    stage = str(row.get("啟動階段", ""))
+    entry_label = str(row.get("進場判定", ""))
+    entry_score = pd.to_numeric(pd.Series([row.get("進場時機分數")]), errors="coerce").iloc[0]
+
+    # 買入觀察區：依啟動階段調整。
+    if "剛啟動" in stage:
+        entry_low = max(short_support, current - 0.9 * atr)
+        entry_high = min(current, short_support + 0.55 * atr)
+        if entry_high < entry_low:
+            entry_high = min(current, entry_low + 0.4 * atr)
+        plan_type = "回測支撐型"
+    elif "蓄勢" in stage:
+        entry_low = max(current, short_res - 0.25 * atr)
+        entry_high = short_res + 0.35 * atr
+        plan_type = "突破確認型"
+    elif "趨勢加速" in stage:
+        entry_low = max(short_support, current - 1.0 * atr)
+        entry_high = max(entry_low, current - 0.35 * atr)
+        plan_type = "等待回檔型"
+    else:
+        entry_low = max(short_support, current - 0.8 * atr)
+        entry_high = min(current, short_support + 0.5 * atr)
+        if entry_high < entry_low:
+            entry_high = entry_low + 0.35 * atr
+        plan_type = "保守觀察型"
+
+    # 停損／失效：支撐下方留 ATR 緩衝，避免單純碰線就被洗出。
+    stop = short_support - 0.55 * atr
+    hard_floor = current * 0.92
+    stop = max(stop, hard_floor)
+    if stop >= entry_low:
+        stop = entry_low - 0.6 * atr
+
+    risk_pct = (entry_high / stop - 1) * 100 if stop > 0 else np.nan
+    reward1_pct = (short_res / entry_high - 1) * 100 if entry_high > 0 else np.nan
+    rr1 = reward1_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 and pd.notna(reward1_pct) else np.nan
+
+    if "可觀察進場" in entry_label:
+        action = "可觀察分批進場"
+        explanation = "模型處於可觀察進場狀態；較適合等價格落在觀察買入區，而不是直接追高。"
+    elif "等待突破" in entry_label:
+        action = "等待突破確認"
+        explanation = "目前較適合等待短線壓力被有效突破，再觀察是否轉成可進場狀態。"
+    elif "等待回檔" in entry_label:
+        action = "等待回檔"
+        explanation = "目前位置偏離支撐較遠，先等價格靠近短線支撐區較合理。"
+    elif "短線過熱" in entry_label:
+        action = "暫不追價"
+        explanation = "短線過熱，模型不建議在壓力附近追價，優先等乖離收斂。"
+    else:
+        action = "暫不考慮"
+        explanation = "目前進場條件不足，先等待模型重新轉強。"
+
+    return {
+        "現價": current,
+        "策略": plan_type,
+        "操作狀態": action,
+        "說明": explanation,
+        "觀察買入下緣": entry_low,
+        "觀察買入上緣": entry_high,
+        "停損失效價": stop,
+        "短期支撐": short_support,
+        "短期支撐來源": short_support_name,
+        "長期支撐": long_support,
+        "長期支撐來源": long_support_name,
+        "短期壓力": short_res,
+        "短期壓力來源": short_res_name,
+        "長期壓力": long_res,
+        "長期壓力來源": long_res_name,
+        "ATR": atr,
+        "估計風險幅度%": risk_pct,
+        "到第一壓力潛在空間%": reward1_pct,
+        "第一目標風報比": rr1,
+        "進場時機分數": entry_score,
+    }
+
+
+def ai_trade_plan_chart(hist, plan):
+    if not plan or hist is None or hist.empty:
+        return None
+
+    d = hist.copy()
+    if "日期" in d.columns:
+        d["日期"] = pd.to_datetime(d["日期"], errors="coerce")
+        d = d.sort_values("日期").tail(80)
+
+    f = history_price_chart(d)
+    f.update_layout(title="AI 操作教練：價格、均線與關鍵區間")
+
+    for label, key in [
+        ("短期支撐", "短期支撐"),
+        ("長期支撐", "長期支撐"),
+        ("短期壓力", "短期壓力"),
+        ("長期壓力", "長期壓力"),
+        ("停損失效", "停損失效價"),
+    ]:
+        v = plan.get(key)
+        if pd.notna(v):
+            f.add_hline(y=v, line_dash="dot", annotation_text=f"{label} {v:.2f}")
+
+    low = plan.get("觀察買入下緣")
+    high = plan.get("觀察買入上緣")
+    if pd.notna(low) and pd.notna(high):
+        f.add_hrect(y0=min(low, high), y1=max(low, high), opacity=0.10, line_width=0, annotation_text="觀察買入區")
+
+    return f
+
+
 def history_price_chart(d):
     f = go.Figure()
     if "收盤價" in d.columns:
@@ -1124,6 +1329,43 @@ elif page == "個股分析":
         st.caption("一週模型權重：技術啟動 40%｜籌碼動能 30%｜基本品質 15%｜價格動能 15%；風險與市場環境另外作 Gate。")
     else:
         st.info("這檔目前還沒有一週模型資料，請先跑一次 GitHub Actions。")
+
+    st.markdown("### AI 操作教練")
+    coach_hist = history_all[history_all["股票代號"].eq(code)].copy() if (not history_all.empty and "股票代號" in history_all.columns) else pd.DataFrame()
+    plan = build_ai_trade_plan(coach_hist, row)
+
+    if not plan:
+        st.info("歷史價格資料不足，暫時無法計算支撐、壓力與操作區間。")
+    else:
+        st.markdown(f"**模型操作狀態：{plan['操作狀態']}**　｜　{plan['策略']}")
+        st.caption(plan["說明"])
+
+        a1,a2,a3,a4 = st.columns(4)
+        a1.metric("觀察買入區", f"{fmt(plan['觀察買入下緣'],2)} ～ {fmt(plan['觀察買入上緣'],2)}")
+        a2.metric("停損 / 失效", fmt(plan["停損失效價"],2))
+        a3.metric("短期壓力", fmt(plan["短期壓力"],2))
+        a4.metric("長期壓力", fmt(plan["長期壓力"],2))
+
+        b1,b2,b3,b4 = st.columns(4)
+        b1.metric("短期支撐", fmt(plan["短期支撐"],2))
+        b2.metric("長期支撐", fmt(plan["長期支撐"],2))
+        b3.metric("風險幅度", fmt(plan["估計風險幅度%"],1,"%"))
+        b4.metric("第一壓力風報比", fmt(plan["第一目標風報比"],2))
+
+        st.caption(
+            f"短期支撐來源：{plan['短期支撐來源']} ｜ 長期支撐來源：{plan['長期支撐來源']} ｜ "
+            f"短期壓力來源：{plan['短期壓力來源']} ｜ 長期壓力來源：{plan['長期壓力來源']}"
+        )
+
+        coach_fig = ai_trade_plan_chart(coach_hist, plan)
+        if coach_fig is not None:
+            st.plotly_chart(coach_fig, use_container_width=True)
+
+        st.info(
+            "操作方式：若模型為『可觀察進場』，優先等價格進入觀察買入區再分批評估；"
+            "跌破停損/失效價代表原本的短線結構被破壞。壓力與支撐都是動態技術位，"
+            "會隨每日行情重新計算，不是保證成交或獲利的價位。"
+        )
 
     st.markdown("### 原始 V5-A")
     a,b,c,d,e=st.columns(5); a.metric("最終分數",fmt(row.get("最終分數"),2)); b.metric("綜合 PR",fmt(row.get("綜合PR"),1)); c.metric("收盤價",fmt(row.get("收盤價"),2)); d.metric("候選等級",str(row.get("候選等級","—"))); e.metric("目前狀態",str(row.get("目前狀態","—")))
