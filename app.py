@@ -1,3 +1,163 @@
+from __future__ import annotations
+
+import io
+import re
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+APP_TITLE = "台股 V1～V5 選股"
+DATA_DIR = Path(__file__).parent / "data"
+
+st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+
+
+def css():
+    st.markdown("""
+    <style>
+    .block-container{padding-top:.7rem;padding-bottom:4rem;max-width:1450px}
+    #MainMenu{visibility:hidden} footer{visibility:hidden}
+    .hero{border:1px solid rgba(100,116,139,.18);border-radius:24px;padding:20px 22px;margin-bottom:14px;background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(148,163,184,.04))}
+    .hero h1{margin:0;font-size:2rem}.hero p{margin:.35rem 0 0;opacity:.68}
+    div[data-testid="stMetric"]{background:rgba(148,163,184,.07);border:1px solid rgba(100,116,139,.16);padding:12px 14px;border-radius:16px}
+    .card{border:1px solid rgba(100,116,139,.18);border-radius:18px;padding:15px;margin-bottom:8px;background:rgba(148,163,184,.045)}
+    .rank{display:inline-block;background:rgba(37,99,235,.12);color:#2563eb;border-radius:999px;padding:3px 9px;font-size:.78rem;font-weight:800}
+    .title{font-size:1.12rem;font-weight:800;margin-top:7px}.score{font-size:1.65rem;font-weight:850;margin-top:6px}.muted{opacity:.66;font-size:.86rem}
+    .good{color:#159447;font-weight:750}.warn{color:#b7791f;font-weight:750}.bad{color:#d64545;font-weight:750}
+    .news{padding:11px 2px;border-bottom:1px solid rgba(100,116,139,.15)}.news a{text-decoration:none;font-weight:700}.newsmeta{opacity:.6;font-size:.8rem;margin-top:4px}
+    @media(max-width:700px){.block-container{padding-left:.7rem;padding-right:.7rem}.hero{padding:15px;border-radius:18px}.hero h1{font-size:1.5rem}.card{border-radius:15px}h2{font-size:1.25rem!important}}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def fmt(v, d=1, suffix=""):
+    if pd.isna(v): return "—"
+    try: return f"{float(v):,.{d}f}{suffix}"
+    except Exception: return str(v)
+
+
+def status_css(s):
+    if s == "趨勢健康": return "good"
+    if s in ["等待回檔", "整理觀察", "一般觀察"]: return "warn"
+    return "bad"
+
+
+def latest_excel() -> Optional[Path]:
+    files = list(DATA_DIR.glob("*.xlsx"))
+    if not files: return None
+    def key(p):
+        m = re.search(r"(20\d{6})", p.stem)
+        return (m.group(1) if m else "00000000", p.stat().st_mtime)
+    return sorted(files, key=key, reverse=True)[0]
+
+
+@st.cache_data(show_spinner=False)
+def read_path(path, mtime):
+    x = pd.ExcelFile(path)
+    return {s: pd.read_excel(path, sheet_name=s) for s in x.sheet_names}
+
+
+@st.cache_data(show_spinner=False)
+def read_bytes(raw):
+    b = io.BytesIO(raw); x = pd.ExcelFile(b); out = {}
+    for s in x.sheet_names:
+        b.seek(0); out[s] = pd.read_excel(b, sheet_name=s)
+    return out
+
+
+def load_data():
+    up = st.sidebar.file_uploader("上傳今日 V1～V5 Excel", type=["xlsx"])
+    if up is not None: return read_bytes(up.getvalue()), up.name
+    p = latest_excel()
+    if p is None: return {}, ""
+    return read_path(str(p), p.stat().st_mtime), p.name
+
+
+def normalize(df):
+    d = df.copy()
+    if "股票代號" in d.columns:
+        d["股票代號"] = d["股票代號"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+    return d
+
+
+def base_date(sheets, filename):
+    d = sheets.get("系統說明")
+    if d is not None and not d.empty and {"項目","說明"}.issubset(d.columns):
+        x = d.loc[d["項目"].astype(str).eq("資料基準日"), "說明"]
+        if not x.empty: return str(x.iloc[0])
+    m = re.search(r"(20\d{6})", filename)
+    if m:
+        x = m.group(1); return f"{x[:4]}-{x[4:6]}-{x[6:]}"
+    return "—"
+
+
+def four_factor(row):
+    labels = ["V1 技術","V2 籌碼","V3 基本面","V4 風險動能"]
+    vals = [row.get("技術分數"), row.get("籌碼標準分"), row.get("基本面分數"), row.get("風險動能分數")]
+    vals = [0 if pd.isna(v) else float(v) for v in vals]
+    f = go.Figure(go.Bar(x=labels, y=vals, text=[f"{v:.0f}" for v in vals], textposition="outside"))
+    f.update_yaxes(range=[0,105]); f.update_layout(height=320, margin=dict(l=15,r=15,t=35,b=15), title="四構面分數")
+    return f
+
+
+def radar(row):
+    labels = ["技術","籌碼","基本面","風險動能"]
+    vals = [row.get("技術分數"), row.get("籌碼標準分"), row.get("基本面分數"), row.get("風險動能分數")]
+    vals = [0 if pd.isna(v) else float(v) for v in vals]
+    f = go.Figure(go.Scatterpolar(r=vals+[vals[0]], theta=labels+[labels[0]], fill="toself"))
+    f.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100])),showlegend=False,height=340,margin=dict(l=20,r=20,t=35,b=20),title="模型雷達圖")
+    return f
+
+
+def pr_chart(row):
+    mp = {"EPS":"每股盈餘PR","ROE":"ROE PR","毛利率":"毛利率PR","營益率":"營業利益率PR","營收YoY":"月營收年增率PR","營收MoM":"月營收月增率PR","負債比":"負債比率PR","流動比":"流動比率PR","資產周轉":"總資產周轉率PR","估值":"估值PR","殖利率":"殖利率PR"}
+    labs, vals = [], []
+    for lab,col in mp.items():
+        if col in row.index and pd.notna(row[col]): labs.append(lab); vals.append(float(row[col]))
+    f = go.Figure(go.Bar(x=vals,y=labs,orientation="h",text=[f"{v:.0f}" for v in vals],textposition="auto"))
+    f.update_xaxes(range=[0,100],title="同產業 PR"); f.update_layout(height=430,margin=dict(l=15,r=15,t=35,b=20),title="同產業基本面 PR")
+    return f
+
+
+def inst_chart(row):
+    labs = ["外資","投信","自營商"]
+    cols = ["外資近5日買賣超（張）","投信近5日買賣超（張）","自營商近5日買賣超（張）"]
+    vals = [float(row.get(c)) if pd.notna(row.get(c,np.nan)) else 0 for c in cols]
+    f = go.Figure(go.Bar(x=labs,y=vals,text=[f"{v:,.0f}" for v in vals],textposition="outside")); f.add_hline(y=0)
+    f.update_layout(height=320,margin=dict(l=15,r=15,t=35,b=15),title="近 5 日法人買賣超（張）")
+    return f
+
+
+def ma_chart(row):
+    labs = ["收盤","MA5","MA20","MA60"]
+    cols = ["收盤價","5日均線","20日均線","60日均線"]
+    vals = [float(row.get(c)) if pd.notna(row.get(c,np.nan)) else np.nan for c in cols]
+    pairs = [(a,b) for a,b in zip(labs,vals) if not pd.isna(b)]
+    if not pairs: return None
+    labs,vals = zip(*pairs)
+    f = go.Figure(go.Bar(x=list(labs),y=list(vals),text=[f"{v:,.2f}" for v in vals],textposition="outside"))
+    f.update_layout(height=300,margin=dict(l=15,r=15,t=35,b=15),title="收盤價與均線")
+    return f
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def news(name, code, limit=8):
+    url = "https://news.google.com/rss/search?q=" + quote(f'"{name}" 股票 {code}') + "&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            root = ET.fromstring(r.read())
+        out = []
+        for item in root.findall(".//item")[:limit]:
+            src = item.find("source")
+            out.append({"title":item.findtext("title",default="").strip(),"link":item.findtext("link",default="").strip(),"date":item.findtext("pubDate",default="").strip(),"source":src.text.strip() if src is not None and src.text else ""})
         return out
     except Exception:
         return []
