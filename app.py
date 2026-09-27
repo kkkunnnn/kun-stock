@@ -49,6 +49,66 @@ def status_css(s):
     return "bad"
 
 
+
+def excel_snapshots():
+    files = list(DATA_DIR.glob("*.xlsx"))
+    def date_key(p):
+        m = re.search(r"(20\\d{6})", p.stem)
+        return (m.group(1) if m else "00000000", p.stat().st_mtime)
+    return sorted(files, key=date_key, reverse=True)
+
+
+def load_previous_rank(current_source):
+    for p in excel_snapshots():
+        if p.name == current_source:
+            continue
+        try:
+            sh = read_path(str(p), p.stat().st_mtime)
+            d = normalize(sh.get("全部排名", pd.DataFrame()))
+            if not d.empty:
+                return d, p.name
+        except Exception:
+            continue
+    return pd.DataFrame(), ""
+
+
+def build_daily_change(current_rank, previous_rank):
+    if previous_rank.empty:
+        return pd.DataFrame()
+
+    keep = ["股票代號", "排名", "最終分數", "候選等級", "目前狀態"]
+    prev = previous_rank[[c for c in keep if c in previous_rank.columns]].copy()
+    prev = prev.rename(columns={
+        "排名": "昨日排名",
+        "最終分數": "昨日最終分數",
+        "候選等級": "昨日候選等級",
+        "目前狀態": "昨日狀態",
+    })
+
+    cur = current_rank.copy()
+    out = cur.merge(prev, on="股票代號", how="left")
+
+    if "排名" in out.columns and "昨日排名" in out.columns:
+        out["排名變化"] = pd.to_numeric(out["昨日排名"], errors="coerce") - pd.to_numeric(out["排名"], errors="coerce")
+
+    if "最終分數" in out.columns and "昨日最終分數" in out.columns:
+        out["分數變化"] = (
+            pd.to_numeric(out["最終分數"], errors="coerce")
+            - pd.to_numeric(out["昨日最終分數"], errors="coerce")
+        )
+
+    if "排名" in out.columns:
+        prev_rank_num = pd.to_numeric(out.get("昨日排名"), errors="coerce")
+        cur_rank_num = pd.to_numeric(out["排名"], errors="coerce")
+        out["新進Top10"] = (cur_rank_num <= 10) & (prev_rank_num.isna() | (prev_rank_num > 10))
+
+    cur_cand = out.get("候選等級", pd.Series("", index=out.index)).astype(str)
+    prev_cand = out.get("昨日候選等級", pd.Series("", index=out.index)).astype(str)
+    out["新進強勢"] = cur_cand.str.contains("強勢候選", na=False) & ~prev_cand.str.contains("強勢候選", na=False)
+
+    return out
+
+
 def latest_excel() -> Optional[Path]:
     files = list(DATA_DIR.glob("*.xlsx"))
     if not files: return None
@@ -238,6 +298,10 @@ if not sheets:
     st.stop()
 
 rank = normalize(sheets.get("全部排名", pd.DataFrame()))
+
+previous_rank, previous_source = load_previous_rank(source)
+daily_change = build_daily_change(rank, previous_rank)
+
 if rank.empty:
     st.error("Excel 找不到『全部排名』工作表。")
     st.stop()
@@ -251,7 +315,7 @@ st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基�
 if coverage < .95:
     st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
 
-pages = ["今日 Top 10","個股分析","完整排名","風險監控","產業分析"]
+pages = ["今日 Top 10","每日變化","個股分析","完整排名","風險監控","產業分析"]
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
 page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
 
@@ -274,14 +338,92 @@ if page == "今日 Top 10":
                 if st.button(f"查看 {name} 詳細分析 →",key=f"d_{code}",use_container_width=True):
                     st.session_state.selected=code; st.session_state.nav="個股分析"; st.rerun()
 
+
+
+    if not daily_change.empty:
+        st.markdown("### 今日變化快訊")
+        new_top = daily_change[daily_change.get("新進Top10", False) == True]
+        risers = daily_change.copy()
+        if "排名變化" in risers.columns:
+            risers = risers[pd.to_numeric(risers["排名變化"], errors="coerce") > 0].sort_values("排名變化", ascending=False).head(5)
+        h1,h2=st.columns(2)
+        with h1:
+            st.markdown("#### 🔥 新進 Top 10")
+            if new_top.empty:
+                st.caption("今天沒有新進 Top 10。")
+            else:
+                cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數"] if c in new_top.columns]
+                table(new_top[cols], height=220)
+        with h2:
+            st.markdown("#### 🚀 排名上升最多")
+            if risers.empty:
+                st.caption("今天沒有排名上升資料。")
+            else:
+                cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","排名變化"] if c in risers.columns]
+                table(risers[cols], height=220)
+
+elif page == "每日變化":
+    st.markdown("## 每日排名變化")
+    if daily_change.empty:
+        st.info("目前只有一天的 Excel。保留今天這份檔案，明天再把新的日期 Excel 上傳到 data 資料夾後，這裡就會自動出現昨日 vs 今日比較。")
+    else:
+        st.caption(f"今日：{source} ｜ 前一份：{previous_source}")
+
+        new_top = daily_change[daily_change.get("新進Top10", False) == True].copy()
+        new_strong = daily_change[daily_change.get("新進強勢", False) == True].copy()
+
+        c1,c2,c3 = st.columns(3)
+        c1.metric("新進 Top 10", f"{len(new_top)} 檔")
+        c2.metric("新進強勢候選", f"{len(new_strong)} 檔")
+        up_count = int((pd.to_numeric(daily_change.get("排名變化"), errors="coerce") > 0).sum()) if "排名變化" in daily_change.columns else 0
+        c3.metric("排名上升", f"{up_count} 檔")
+
+        st.markdown("### 排名上升最多")
+        risers = daily_change.copy()
+        if "排名變化" in risers.columns:
+            risers = risers[pd.to_numeric(risers["排名變化"], errors="coerce") > 0]
+            risers = risers.sort_values(["排名變化","分數變化"], ascending=[False,False]).head(10)
+        cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","排名變化","最終分數","昨日最終分數","分數變化","目前狀態"] if c in risers.columns]
+        table(risers[cols], height=390)
+
+        st.markdown("### 今日新進 Top 10")
+        if new_top.empty:
+            st.caption("今天沒有新進 Top 10。")
+        else:
+            cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數","分數變化","候選等級","目前狀態"] if c in new_top.columns]
+            table(new_top[cols], height=300)
+
+        st.markdown("### 今日新進強勢候選")
+        if new_strong.empty:
+            st.caption("今天沒有新進強勢候選。")
+        else:
+            cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","最終分數","分數變化","候選等級","昨日候選等級","目前狀態"] if c in new_strong.columns]
+            table(new_strong[cols], height=300)
+
+
 elif page == "個股分析":
     opts=rank.apply(lambda r:f"{r['股票代號']} {r['股票名稱']}",axis=1).tolist()
     selcode=st.session_state.get("selected",str(rank.iloc[0]["股票代號"]))
     idx=next((i for i,x in enumerate(opts) if x.startswith(selcode+" ")),0)
     selected=st.selectbox("選擇股票",opts,index=idx); code=selected.split(" ",1)[0]; st.session_state.selected=code
     row=rank.loc[rank["股票代號"].eq(code)].iloc[0]; name=str(row.get("股票名稱",""))
+
+    change_row = None
+    if not daily_change.empty:
+        xchg = daily_change[daily_change["股票代號"].eq(code)]
+        if not xchg.empty:
+            change_row = xchg.iloc[0]
+
     st.markdown(f"## {code}　{name}"); st.caption(f"{row.get('市場','—')} ｜ {row.get('產業別','—')} ｜ {row.get('財報類型','—')}")
     a,b,c,d,e=st.columns(5); a.metric("最終分數",fmt(row.get("最終分數"),2)); b.metric("綜合 PR",fmt(row.get("綜合PR"),1)); c.metric("收盤價",fmt(row.get("收盤價"),2)); d.metric("候選等級",str(row.get("候選等級","—"))); e.metric("目前狀態",str(row.get("目前狀態","—")))
+    if change_row is not None:
+        p1,p2,p3=st.columns(3)
+        p1.metric("昨日排名", fmt(change_row.get("昨日排名"),0))
+        rank_delta = change_row.get("排名變化", np.nan)
+        p2.metric("排名變化", ("↑ " + fmt(rank_delta,0)) if pd.notna(rank_delta) and float(rank_delta)>0 else (("↓ " + fmt(abs(float(rank_delta)),0)) if pd.notna(rank_delta) and float(rank_delta)<0 else "—"))
+        score_delta = change_row.get("分數變化", np.nan)
+        p3.metric("分數變化", fmt(score_delta,2))
+
     st.markdown("### 基本資訊")
     a,b,c,d,e,f=st.columns(6); a.metric("EPS",fmt(row.get("每股盈餘"),2)); b.metric("ROE",fmt(row.get("ROE"),1,"%")); c.metric("本益比",fmt(row.get("本益比"),1)); d.metric("P/B",fmt(row.get("股價淨值比"),2)); e.metric("殖利率",fmt(row.get("殖利率"),2,"%")); f.metric("營收 YoY",fmt(row.get("月營收年增率"),1,"%"))
     l,r=st.columns(2)
