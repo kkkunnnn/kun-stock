@@ -425,6 +425,38 @@ def bucket_chart(bucket_df, title):
 
 
 
+
+@st.cache_data(show_spinner=False)
+def load_global_market():
+    detail_path = DATA_DIR / "global_market_latest.csv"
+    summary_path = DATA_DIR / "global_market_summary.csv"
+
+    detail = pd.DataFrame()
+    summary = pd.DataFrame()
+
+    try:
+        if detail_path.exists():
+            detail = pd.read_csv(detail_path)
+    except Exception:
+        detail = pd.DataFrame()
+
+    try:
+        if summary_path.exists():
+            summary = pd.read_csv(summary_path)
+    except Exception:
+        summary = pd.DataFrame()
+
+    return detail, summary
+
+
+def global_regime_color(label):
+    if label in ["偏多順風", "中性偏多"]:
+        return "good"
+    if label == "震盪中性":
+        return "warn"
+    return "bad"
+
+
 def base_date(sheets, filename):
     d = sheets.get("系統說明")
     if d is not None and not d.empty and {"項目","說明"}.issubset(d.columns):
@@ -509,6 +541,7 @@ css()
 sheets, source = load_data()
 history_all = load_history()
 ranking_history_all = load_ranking_history()
+global_market_detail, global_market_summary = load_global_market()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
     st.stop()
@@ -531,7 +564,7 @@ st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基�
 if coverage < .95:
     st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
 
-pages = ["今日 Top 10","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
+pages = ["今日 Top 10","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
 page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
 
@@ -540,6 +573,18 @@ if page == "今日 Top 10":
     healthy = rank.get("目前狀態",pd.Series(dtype=str)).astype(str).eq("趨勢健康").sum()
     overheat = rank.get("目前狀態",pd.Series(dtype=str)).astype(str).eq("短線過熱").sum()
     a,b,c,d = st.columns(4); a.metric("股票池",f"{len(rank)} 檔"); b.metric("強勢候選",f"{int(strong)} 檔"); c.metric("趨勢健康",f"{int(healthy)} 檔"); d.metric("短線過熱",f"{int(overheat)} 檔")
+    if not global_market_summary.empty:
+        gs = global_market_summary.iloc[0]
+        regime = str(gs.get("全球環境判定","資料不足"))
+        score = gs.get("全球環境分數", np.nan)
+        st.markdown("### 全球市場環境")
+        st.markdown(
+            f'<div class="card"><div class="title">全球環境分數：{fmt(score,1)}</div>'
+            f'<div class="{global_regime_color(regime)}">{regime}</div>'
+            f'<div class="muted">資料日期：{gs.get("資料日期","—")}</div></div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown("## 今日模型 Top 10")
     st.caption("依 V1～V5 最終分數排序，作為優先研究清單，不代表保證報酬。")
     top = rank.sort_values("排名").head(10) if "排名" in rank.columns else rank.head(10)
@@ -582,6 +627,51 @@ if page == "今日 Top 10":
             else:
                 cols=[c for c in ["股票代號","股票名稱","排名","昨日排名","排名變化"] if c in risers.columns]
                 table(risers[cols], height=220)
+
+
+elif page == "全球市場":
+    st.markdown("## 全球市場 Gate")
+    st.caption("這一頁不直接決定個股好壞，而是判斷短線環境是否順風，供『一週起漲』與進場時機模型使用。")
+
+    if global_market_summary.empty or global_market_detail.empty:
+        st.info("目前尚未產生全球市場資料。請手動跑一次 GitHub Actions，或等待今晚 21:00 自動更新。")
+    else:
+        gs = global_market_summary.iloc[0]
+        regime = str(gs.get("全球環境判定","資料不足"))
+        score = gs.get("全球環境分數", np.nan)
+
+        c1,c2,c3 = st.columns(3)
+        c1.metric("全球環境分數", fmt(score,1))
+        c2.metric("環境判定", regime)
+        c3.metric("資料日期", str(gs.get("資料日期","—")))
+
+        st.markdown("### 核心市場指標")
+
+        display_cols = [
+            c for c in [
+                "項目","最新值","1日變動率","5日變動率",
+                "MA20","MA60","高於MA20","高於MA60"
+            ] if c in global_market_detail.columns
+        ]
+
+        show = global_market_detail[display_cols].copy()
+        for c in ["最新值","1日變動率","5日變動率","MA20","MA60"]:
+            if c in show.columns:
+                show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+
+        table(show, height=430)
+
+        st.markdown("### 判讀")
+        if regime == "偏多順風":
+            st.success("目前全球環境偏多，對一週起漲型策略較有利。")
+        elif regime == "中性偏多":
+            st.success("全球環境偏正向，但仍需個股技術與籌碼確認。")
+        elif regime == "震盪中性":
+            st.warning("全球環境中性，個股需更重視進場位置與風險控制。")
+        else:
+            st.error("全球環境偏逆風，後續『進場時機分數』會更嚴格。")
+
+        st.caption("目前追蹤：S&P 500、Nasdaq 100、SOX、VIX、TSM ADR、NVIDIA、美國10年債殖利率、USD/TWD。")
 
 elif page == "每日變化":
     st.markdown("## 每日排名變化")
