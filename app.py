@@ -399,14 +399,53 @@ def build_ai_trade_plan(hist, row):
     if stop >= entry_low:
         stop = entry_low - 0.6 * atr
 
-    # 止盈：一週模型以第一道有效壓力作主要止盈；第二道壓力作延伸目標。
-    take_profit = short_res if short_res > entry_high else long_res
-    take_profit2 = long_res if long_res > take_profit else take_profit + atr
+    # 1～2 月波段目標：壓力位不再當作自動止盈，而是當「途中關卡」。
+    # 真正的波段目標用進場區上緣計算 +15%、+30%、+50%，
+    # 並用移動停利處理強勢股，避免一碰短壓就太早賣掉。
+    take_profit1 = entry_high * 1.15
+    take_profit2 = entry_high * 1.30
+    take_profit3 = entry_high * 1.50
 
     risk_pct = (entry_high / stop - 1) * 100 if stop > 0 else np.nan
-    reward1_pct = (take_profit / entry_high - 1) * 100 if entry_high > 0 else np.nan
-    reward2_pct = (take_profit2 / entry_high - 1) * 100 if entry_high > 0 else np.nan
-    rr1 = reward1_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 and pd.notna(reward1_pct) else np.nan
+    reward1_pct = 15.0
+    reward2_pct = 30.0
+    reward3_pct = 50.0
+    rr1 = reward1_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 else np.nan
+    rr2 = reward2_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 else np.nan
+    rr3 = reward3_pct / risk_pct if pd.notna(risk_pct) and risk_pct > 0 else np.nan
+
+    # 1～2 月波段潛力分數：偏重中期動能、趨勢、量能與基本品質。
+    ret20_v = pd.to_numeric(pd.Series([row.get("20日報酬率")]), errors="coerce").iloc[0]
+    ret60_v = pd.to_numeric(pd.Series([row.get("60日報酬率")]), errors="coerce").iloc[0]
+    vol_ratio_v = pd.to_numeric(pd.Series([row.get("量比")]), errors="coerce").iloc[0]
+    tech_v = pd.to_numeric(pd.Series([row.get("技術啟動分數")]), errors="coerce").iloc[0]
+    chip_v = pd.to_numeric(pd.Series([row.get("籌碼動能分數")]), errors="coerce").iloc[0]
+    quality_v = pd.to_numeric(pd.Series([row.get("基本品質分數")]), errors="coerce").iloc[0]
+    momentum_v = pd.to_numeric(pd.Series([row.get("價格動能分數")]), errors="coerce").iloc[0]
+
+    swing_score = 0.0
+    swing_score += (0 if pd.isna(tech_v) else tech_v) * 0.25
+    swing_score += (0 if pd.isna(chip_v) else chip_v) * 0.20
+    swing_score += (0 if pd.isna(quality_v) else quality_v) * 0.20
+    swing_score += (0 if pd.isna(momentum_v) else momentum_v) * 0.20
+
+    trend_bonus = 0.0
+    if pd.notna(ret20_v) and 5 <= ret20_v <= 25:
+        trend_bonus += 5
+    if pd.notna(ret60_v) and 10 <= ret60_v <= 45:
+        trend_bonus += 5
+    if pd.notna(vol_ratio_v) and 1.2 <= vol_ratio_v <= 3.0:
+        trend_bonus += 5
+    swing_score = min(100.0, swing_score + trend_bonus)
+
+    if swing_score >= 80:
+        swing_label = "高波段潛力"
+    elif swing_score >= 68:
+        swing_label = "中高波段潛力"
+    elif swing_score >= 55:
+        swing_label = "中等波段潛力"
+    else:
+        swing_label = "波段潛力不足"
 
     if "可觀察進場" in entry_label:
         action = "可觀察分批進場"
@@ -432,8 +471,11 @@ def build_ai_trade_plan(hist, row):
         "觀察買入下緣": entry_low,
         "觀察買入上緣": entry_high,
         "停損失效價": stop,
-        "建議止盈價": take_profit,
-        "第二止盈價": take_profit2,
+        "第一波段目標": take_profit1,
+        "第二波段目標": take_profit2,
+        "50%挑戰價": take_profit3,
+        "波段潛力分數": swing_score,
+        "波段潛力判定": swing_label,
         "短期支撐": short_support,
         "短期支撐來源": short_support_name,
         "長期支撐": long_support,
@@ -444,9 +486,12 @@ def build_ai_trade_plan(hist, row):
         "長期壓力來源": long_res_name,
         "ATR": atr,
         "估計風險幅度%": risk_pct,
-        "到第一止盈潛在空間%": reward1_pct,
-        "到第二止盈潛在空間%": reward2_pct,
+        "第一目標潛在空間%": reward1_pct,
+        "第二目標潛在空間%": reward2_pct,
+        "50%目標潛在空間%": reward3_pct,
         "第一目標風報比": rr1,
+        "第二目標風報比": rr2,
+        "50%目標風報比": rr3,
         "進場時機分數": entry_score,
     }
 
@@ -1362,8 +1407,13 @@ elif page == "個股分析":
             st.markdown("#### 關鍵價位")
             st.metric("觀察買入區", f"{fmt(plan['觀察買入下緣'],2)} ～ {fmt(plan['觀察買入上緣'],2)}")
             st.metric("停損 / 失效", fmt(plan["停損失效價"],2))
-            st.metric("建議止盈", fmt(plan["建議止盈價"],2))
-            st.caption(f"延伸止盈：{fmt(plan['第二止盈價'],2)}")
+            st.metric("波段潛力", fmt(plan["波段潛力分數"],1))
+            st.caption(plan["波段潛力判定"])
+
+            st.markdown("**1～2 月波段目標**")
+            st.write(f"第一目標 +15%：**{fmt(plan['第一波段目標'],2)}**")
+            st.write(f"第二目標 +30%：**{fmt(plan['第二波段目標'],2)}**")
+            st.write(f"50% 挑戰價：**{fmt(plan['50%挑戰價'],2)}**")
 
             st.markdown("**支撐**")
             st.write(f"短期：**{fmt(plan['短期支撐'],2)}**　{plan['短期支撐來源']}")
@@ -1375,13 +1425,15 @@ elif page == "個股分析":
 
             st.markdown("**風險 / 報酬**")
             st.write(f"風險幅度：**{fmt(plan['估計風險幅度%'],1,'%')}**")
-            st.write(f"第一止盈空間：**{fmt(plan['到第一止盈潛在空間%'],1,'%')}**")
-            st.write(f"第一止盈風報比：**{fmt(plan['第一目標風報比'],2)}**")
+            st.write(f"+15% 目標風報比：**{fmt(plan['第一目標風報比'],2)}**")
+            st.write(f"+30% 目標風報比：**{fmt(plan['第二目標風報比'],2)}**")
+            st.write(f"+50% 目標風報比：**{fmt(plan['50%目標風報比'],2)}**")
 
         st.info(
             "操作方式：若模型為『可觀察進場』，優先等價格進入觀察買入區再分批評估；"
-            "跌破停損/失效價代表原本的短線結構被破壞。『建議止盈』以第一道有效壓力為主，"
-            "若突破並站穩，可再觀察延伸止盈價。所有價位會隨每日行情重新計算。"
+            "跌破停損/失效價代表原本的結構被破壞。短期/長期壓力現在只當作『途中關卡』，"
+            "不再碰到就自動止盈；若趨勢延續，可用 +15%、+30%、+50% 波段目標搭配移動停利。"
+            "所有價位會隨每日行情重新計算。"
         )
 
     st.markdown("### 原始 V5-A")
