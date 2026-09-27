@@ -811,48 +811,59 @@ elif page == "一週模型":
         table(d[cols],height=620)
 
 elif page == "全球市場":
-    st.markdown("## 全球市場 Gate")
-    st.caption("這一頁不直接決定個股好壞，而是判斷短線環境是否順風，供『一週起漲』與進場時機模型使用。")
+    st.markdown("## 市場環境 Gate")
+    st.caption("這一頁不是替個股加基本面分，而是判斷未來一週的市場順風程度。台股 Gate、全球 Gate、產業海外龍頭 Gate 都會影響『進場時機分數』。")
 
-    if global_market_summary.empty or global_market_detail.empty:
-        st.info("目前尚未產生全球市場資料。請手動跑一次 GitHub Actions，或等待今晚 21:00 自動更新。")
+    g1,g2=st.columns(2)
+    with g1:
+        st.markdown("### 台股市場")
+        if domestic_market_summary.empty:
+            st.info("尚未產生台股市場 Gate。請手動跑一次 GitHub Actions。")
+        else:
+            ds=domestic_market_summary.iloc[0]
+            dscore=ds.get("台股環境分數",np.nan)
+            dreg=str(ds.get("台股環境判定","資料不足"))
+            c1,c2=st.columns(2)
+            c1.metric("台股環境分數",fmt(dscore,1))
+            c2.metric("判定",dreg)
+            st.write({
+                "加權指數技術分": fmt(ds.get("加權指數技術分"),1),
+                "市場廣度分數": fmt(ds.get("市場廣度分數"),1),
+                "站上MA20比例": fmt(ds.get("站上MA20比例"),1,"%"),
+                "5日上漲比例": fmt(ds.get("5日上漲比例"),1,"%"),
+                "20日上漲比例": fmt(ds.get("20日上漲比例"),1,"%"),
+            })
+
+    with g2:
+        st.markdown("### 全球市場")
+        if global_market_summary.empty:
+            st.info("尚未產生全球市場 Gate。請手動跑一次 GitHub Actions。")
+        else:
+            gs=global_market_summary.iloc[0]
+            gscore=gs.get("全球環境分數",np.nan)
+            greg=str(gs.get("全球環境判定","資料不足"))
+            c1,c2=st.columns(2)
+            c1.metric("全球環境分數",fmt(gscore,1))
+            c2.metric("判定",greg)
+            st.caption(f"資料日期：{gs.get('資料日期','—')}")
+
+    st.markdown("### 海外大盤與龍頭")
+    if global_market_detail.empty:
+        st.info("尚未產生海外市場明細。")
     else:
-        gs = global_market_summary.iloc[0]
-        regime = str(gs.get("全球環境判定","資料不足"))
-        score = gs.get("全球環境分數", np.nan)
-
-        c1,c2,c3 = st.columns(3)
-        c1.metric("全球環境分數", fmt(score,1))
-        c2.metric("環境判定", regime)
-        c3.metric("資料日期", str(gs.get("資料日期","—")))
-
-        st.markdown("### 核心市場指標")
-
-        display_cols = [
-            c for c in [
-                "項目","最新值","1日變動率","5日變動率",
-                "MA20","MA60","高於MA20","高於MA60"
-            ] if c in global_market_detail.columns
-        ]
-
-        show = global_market_detail[display_cols].copy()
+        display_cols=[c for c in [
+            "項目","最新值","1日變動率","5日變動率",
+            "MA20","MA60","高於MA20","高於MA60"
+        ] if c in global_market_detail.columns]
+        show=global_market_detail[display_cols].copy()
         for c in ["最新值","1日變動率","5日變動率","MA20","MA60"]:
             if c in show.columns:
-                show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+                show[c]=pd.to_numeric(show[c],errors="coerce").round(2)
+        table(show,height=560)
 
-        table(show, height=430)
-
-        st.markdown("### 判讀")
-        if regime == "偏多順風":
-            st.success("目前全球環境偏多，對一週起漲型策略較有利。")
-        elif regime == "中性偏多":
-            st.success("全球環境偏正向，但仍需個股技術與籌碼確認。")
-        elif regime == "震盪中性":
-            st.warning("全球環境中性，個股需更重視進場位置與風險控制。")
-        else:
-            st.error("全球環境偏逆風，後續『進場時機分數』會更嚴格。")
-
-        st.caption("目前追蹤：S&P 500、Nasdaq 100、SOX、VIX、TSM ADR、NVIDIA、美國10年債殖利率、USD/TWD。")
+    st.markdown("### 目前追蹤邏輯")
+    st.write("大盤：S&P 500、Nasdaq 100、SOX、台灣加權；風險：VIX、美國10年債、USD/TWD；龍頭：TSM ADR、NVIDIA、AMD、Broadcom、Micron、Apple、Microsoft、Amazon。")
+    st.caption("產業海外順風分數會依台股產業映射不同海外龍頭，例如半導體會看 SOX、TSM、NVDA、AMD、AVGO、MU；蘋果鏈與電子零組件則會提高 AAPL 的參考權重。")
 
 elif page == "每日變化":
     st.markdown("## 每日排名變化")
