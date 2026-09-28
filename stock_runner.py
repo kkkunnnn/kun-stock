@@ -25,6 +25,64 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 _FINMIND_ASYNC_BROKEN = False
 
 
+def safe_tpex_daily(date):
+    """Robust TPEx daily quotes for GitHub Actions.
+
+    The legacy TPEx website endpoint can intermittently fail/block cloud runners.
+    Use the official TPEx OpenAPI snapshot first and only accept rows when its
+    embedded trading date matches the requested date. This prevents TWSE-only
+    partial universes from silently passing as a complete market.
+    """
+    import requests
+
+    url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+    try:
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        rows = resp.json()
+        if not isinstance(rows, list) or not rows:
+            return pd.DataFrame()
+
+        def pick(d, *keys):
+            for k in keys:
+                if k in d and str(d.get(k, "")).strip() not in {"", "None"}:
+                    return d.get(k)
+            return None
+
+        def roc_to_date(v):
+            x = str(v or "").strip().replace("/", "")
+            if len(x) == 7 and x.isdigit():
+                return pd.Timestamp(year=int(x[:3]) + 1911, month=int(x[3:5]), day=int(x[5:7])).date()
+            if len(x) == 8 and x.isdigit():
+                return pd.Timestamp(year=int(x[:4]), month=int(x[4:6]), day=int(x[6:8])).date()
+            return None
+
+        payload_date = roc_to_date(pick(rows[0], "Date", "date", "日期"))
+        req_date = pd.Timestamp(date).date()
+        if payload_date != req_date:
+            return pd.DataFrame()
+
+        out=[]
+        for r in rows:
+            code = str(pick(r, "SecuritiesCompanyCode", "Code", "股票代號", "代號") or "").strip()
+            name = str(pick(r, "CompanyName", "SecuritiesCompanyName", "Name", "股票名稱", "名稱") or "").strip()
+            vol = pick(r, "TradingShares", "Trading_Volume", "成交股數")
+            try:
+                vol = float(str(vol).replace(",", "").strip())
+            except Exception:
+                vol = np.nan
+            if code:
+                out.append({"股票代號": code, "股票名稱": name, "成交股數": vol, "市場": "上櫃"})
+
+        df=pd.DataFrame(out)
+        if not df.empty:
+            print(f"✅ TPEx OpenAPI：{len(df)} 筆，交易日 {payload_date}")
+        return df
+    except Exception as e:
+        print(f"⚠️ TPEx OpenAPI 失敗：{str(e)[:140]}")
+        return pd.DataFrame()
+
+
 def _yfinance_taiwan_batch(stock_ids, start_date, end_date):
     """FinMind 額度不足時，以 Yahoo Finance 批次補台股 OHLCV。"""
     import yfinance as yf
@@ -176,6 +234,12 @@ def sanitize_code(source: str) -> str:
     source = batch_pattern.sub(
         'df = safe_finmind_batch(api, batch, 開始日期, 結束日期)',
         source,
+    )
+
+    # GitHub Actions 上舊 TPEx 網頁端點可能被擋；改用官方 OpenAPI。
+    source = source.replace(
+        'tp = 取得上櫃行情(\\n                date\\n            )',
+        'tp = safe_tpex_daily(date)'
     )
     return source
 
@@ -1443,6 +1507,7 @@ def main() -> None:
         "__file__": str(NOTEBOOK_PATH),
         "os": os,
         "safe_finmind_batch": safe_finmind_batch,
+        "safe_tpex_daily": safe_tpex_daily,
     }
 
     for idx, raw in enumerate(code_cells):
@@ -1480,6 +1545,17 @@ def main() -> None:
     latest_trade_date = namespace.get("最新交易日")
     if latest_trade_date is None:
         raise RuntimeError("程式執行完成，但找不到 最新交易日 變數")
+
+    # Universe integrity check: the screener promises TWSE + TPEx.
+    # Never silently publish a TWSE-only result again.
+    result_check = namespace.get("結果")
+    if isinstance(result_check, pd.DataFrame) and not result_check.empty and "市場" in result_check.columns:
+        market_counts = result_check["市場"].astype(str).value_counts().to_dict()
+        print(f"市場完整度：{market_counts}")
+        if market_counts.get("上市", 0) == 0 or market_counts.get("上櫃", 0) == 0:
+            raise RuntimeError(
+                f"股票池市場不完整：{market_counts}。今日結果不寫入，避免漏掉上市或上櫃股票。"
+            )
 
     date_text = latest_trade_date.strftime("%Y%m%d")
     excel_name = f"台股V1V2V3V4V5最終選股_{date_text}.xlsx"
