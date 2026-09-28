@@ -27,6 +27,13 @@ from selection_model_v2_analysis import (
     build_runup_buckets,
     build_ignition_timing,
 )
+from selection_model_v2 import (
+    add_selection_v2_components,
+    add_candidate_rankings,
+    select_config_on_development,
+    compare_selected_vs_baseline,
+    branch_capture_summary,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -225,6 +232,8 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
     if len(train) < 3000:
         return pd.DataFrame()
 
+    test = add_selection_v2_components(train, test)
+
     means = train[FEATURES].mean()
     stds = train[FEATURES].std().replace(0, 1).fillna(1)
 
@@ -261,6 +270,9 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
             "dd20_high": r.get("dd20_high"),
             "dd60_high": r.get("dd60_high"),
             **{f: r.get(f) for f in FEATURES},
+            "s2_general_raw": r.get("s2_general_raw"),
+            "s2_ignition_raw": r.get("s2_ignition_raw"),
+            "s2_second_raw": r.get("s2_second_raw"),
         })
 
     out = pd.DataFrame(out_rows)
@@ -547,6 +559,10 @@ def main():
         raise RuntimeError("Walk-forward 沒有產生有效測試結果")
 
     res = pd.concat(results, ignore_index=True)
+    res = add_candidate_rankings(res)
+    s2_selected, s2_candidates = select_config_on_development(res)
+    s2_comparison = compare_selected_vs_baseline(res, s2_selected)
+    s2_branches = branch_capture_summary(res, s2_selected)
     summary = summarize(res)
 
     exit_trades = run_exit_strategy_backtest(res, prices)
@@ -592,6 +608,15 @@ def main():
     selection_ignition = build_ignition_timing(res)
 
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
+    s2_candidates.to_csv(DATA_DIR / "selection_v2_model_candidates.csv", index=False, encoding="utf-8-sig")
+    s2_comparison.to_csv(DATA_DIR / "selection_v2_model_comparison.csv", index=False, encoding="utf-8-sig")
+    s2_branches.to_csv(DATA_DIR / "selection_v2_branch_summary.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([{
+        "selected_config": s2_selected,
+        "selection_rule": "只用2025前開發期挑設定；2025起OOS只驗證不參與選擇",
+        "target": "40交易日內最高漲幅>=50%",
+        "branches": "General + Ignition + SecondLeg",
+    }]).to_csv(DATA_DIR / "selection_v2_selected_config.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
@@ -637,6 +662,10 @@ def main():
         "Regime用途": "只做歷史條件化驗證，不用OOS結果重新挑參數",
         "Selection診斷版本": "S2-DIAG-1.0",
         "Selection診斷": "Precision/Recall + False Negative + 特徵區分力 + 爆發前已漲幅 + 到+50時間",
+        "Selection V2候選引擎": "S2-CAND-1.0",
+        "Selection V2分支": "General + Ignition + SecondLeg",
+        "Selection V2挑選原則": "只用2025前開發期挑設定；2025起OOS只驗證不參與挑選",
+        "Selection V2選定設定": s2_selected,
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -661,6 +690,13 @@ def main():
     print(selection_runup.to_string(index=False))
     print("\n✅ Selection V2 Ignition timing")
     print(selection_ignition.to_string(index=False))
+    print("\n✅ Selection V2 candidate configs (development only)")
+    print(s2_candidates.to_string(index=False))
+    print(f"\n✅ Selected S2 config: {s2_selected}")
+    print("\n✅ S1 vs S2 comparison")
+    print(s2_comparison.to_string(index=False))
+    print("\n✅ S2 branch capture")
+    print(s2_branches.to_string(index=False))
 
 
 if __name__ == "__main__":
