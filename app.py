@@ -203,6 +203,7 @@ def normalize(df):
 
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_weekly_model():
     p = DATA_DIR / "weekly_model_latest.csv"
     if not p.exists():
@@ -215,6 +216,7 @@ def load_weekly_model():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_domestic_market():
     p = DATA_DIR / "domestic_market_summary.csv"
     if not p.exists():
@@ -630,6 +632,7 @@ def history_macd_chart(d):
 
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_ranking_history():
     p = DATA_DIR / "ranking_history.csv"
     if not p.exists():
@@ -875,6 +878,7 @@ def bucket_chart(bucket_df, title):
 
 
 
+@st.cache_data(show_spinner=False)
 def load_walkforward_validation():
     summary_path = DATA_DIR / "walkforward_summary.csv"
     metadata_path = DATA_DIR / "walkforward_metadata.csv"
@@ -1055,6 +1059,7 @@ def load_walkforward_validation():
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_global_market():
     detail_path = DATA_DIR / "global_market_latest.csv"
     summary_path = DATA_DIR / "global_market_summary.csv"
@@ -1332,7 +1337,7 @@ def market_news(limit=14):
         url="https://news.google.com/rss/search?q="+quote(q)+"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         try:
             req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0"})
-            with urllib.request.urlopen(req,timeout=12) as resp:
+            with urllib.request.urlopen(req,timeout=5) as resp:
                 root=ET.fromstring(resp.read())
             for item in root.findall(".//item"):
                 src=item.find("source")
@@ -2814,7 +2819,8 @@ elif page == "一週模型":
 elif page == "市場消息分析":
     st.markdown("## 📰 市場消息分析")
     st.caption("主動篩選可信度較高、且可能真正影響跨資產定價的市場消息。新聞標題來自公開 RSS；下方影響判讀是量化規則摘要，不把單一新聞當成確定因果。")
-    items=market_news(12)
+    with st.spinner("正在整理重要市場消息…"):
+        items=market_news(12)
     if not items:
         st.info("目前無法取得市場新聞。")
     else:
