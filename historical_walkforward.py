@@ -64,6 +64,13 @@ from global_macro_model_v1 import (
     compare_macro,
     macro_feature_diagnostics,
 )
+from overheat_validation import (
+    add_policy_rankings,
+    select_on_development as select_overheat_on_development,
+    compare_selected as compare_overheat_selected,
+    hot_cohort_summary,
+    selected_config_frame as overheat_selected_config_frame,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -698,6 +705,15 @@ def main():
     s2_comparison = compare_selected_vs_baseline(res, s2_selected)
     s2_branches = branch_capture_summary(res, s2_selected)
 
+    # Overheat retention validation:
+    # isolate the decision "exclude all overheat vs keep only strong continuation cases".
+    # Threshold selection uses development period only; OOS is untouched until evaluation.
+    res = add_policy_rankings(res, s2_selected)
+    overheat_selected, overheat_candidates = select_overheat_on_development(res)
+    overheat_comparison = compare_overheat_selected(res, overheat_selected)
+    overheat_cohorts = hot_cohort_summary(res, overheat_selected, s2_selected)
+    overheat_selected_cfg = overheat_selected_config_frame(overheat_selected, s2_selected)
+
     res = add_s21_rankings(res)
     s21_selected, s21_candidates = select_s21_on_development(res)
     s21_comparison = compare_s21(res, s21_selected, s2_selected=s2_selected)
@@ -768,6 +784,10 @@ def main():
     s2_candidates.to_csv(DATA_DIR / "selection_v2_model_candidates.csv", index=False, encoding="utf-8-sig")
     s2_comparison.to_csv(DATA_DIR / "selection_v2_model_comparison.csv", index=False, encoding="utf-8-sig")
     s2_branches.to_csv(DATA_DIR / "selection_v2_branch_summary.csv", index=False, encoding="utf-8-sig")
+    overheat_candidates.to_csv(DATA_DIR / "overheat_model_candidates.csv", index=False, encoding="utf-8-sig")
+    overheat_comparison.to_csv(DATA_DIR / "overheat_model_comparison.csv", index=False, encoding="utf-8-sig")
+    overheat_cohorts.to_csv(DATA_DIR / "overheat_cohort_summary.csv", index=False, encoding="utf-8-sig")
+    overheat_selected_cfg.to_csv(DATA_DIR / "overheat_selected_config.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame([{
         "selected_config": s2_selected,
         "selection_rule": "只用2025前開發期挑設定；2025起OOS只驗證不參與選擇",
@@ -867,6 +887,9 @@ def main():
         "Selection V2分支": "General + Ignition + SecondLeg",
         "Selection V2挑選原則": "只用2025前開發期挑設定；2025起OOS只驗證不參與挑選",
         "Selection V2選定設定": s2_selected,
+        "Overheat Validation版本": "OH-WF-1.0",
+        "Overheat Validation原則": "只用2025前開發期選保留門檻；2025起OOS只驗證",
+        "Overheat Validation選定設定": overheat_selected,
         "Selection V2.1版本": "S2.1-BRANCH-1.0",
         "Selection V2.1方法": "General / Ignition / SecondLeg 獨立排名後輪替合併，不做固定權重平均",
         "Selection V2.1挑選原則": "只用2025前開發期挑分支輪替；2025起OOS只驗證不參與挑選",
