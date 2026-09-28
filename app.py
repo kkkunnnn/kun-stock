@@ -961,6 +961,10 @@ def load_walkforward_validation():
         "s2_comparison": DATA_DIR / "selection_v2_model_comparison.csv",
         "s2_branches": DATA_DIR / "selection_v2_branch_summary.csv",
         "s2_selected": DATA_DIR / "selection_v2_selected_config.csv",
+        "s21_candidates": DATA_DIR / "selection_v21_model_candidates.csv",
+        "s21_comparison": DATA_DIR / "selection_v21_model_comparison.csv",
+        "s21_attribution": DATA_DIR / "selection_v21_branch_attribution.csv",
+        "s21_selected": DATA_DIR / "selection_v21_selected_config.csv",
     }
     selection_data = {}
     for key, path in selection_files.items():
@@ -1833,8 +1837,58 @@ elif page == "專業驗證":
                 st.markdown("#### 核心特徵區分力")
                 table(s2_diag, height=330)
 
+            s21_cmp = walkforward_selection_v2.get("s21_comparison", pd.DataFrame())
+            s21_sel = walkforward_selection_v2.get("s21_selected", pd.DataFrame())
+            s21_cand = walkforward_selection_v2.get("s21_candidates", pd.DataFrame())
+            s21_attr = walkforward_selection_v2.get("s21_attribution", pd.DataFrame())
+
+            st.markdown("### Selection Model 2.1 / 分支獨立模型")
+            st.caption(
+                "S2.1 不再把 General、Ignition、Second-Leg 用固定權重平均。"
+                "三個分支各自獨立排名，再依開發期選出的輪替規則合併；2025 起 OOS 只驗證，不參與挑選。"
+            )
+
+            if s21_cmp.empty:
+                st.info("S2.1 尚未完成回測。重新執行一次 Historical Walk-Forward Validation 即可產生。")
+            else:
+                s21_name = str(s21_sel.iloc[0].get("selected_config","—")) if not s21_sel.empty else "—"
+                st.markdown(f"#### S2.1 開發期選定設定：{s21_name}")
+
+                oos21 = s21_cmp[
+                    (s21_cmp["期間"].astype(str) == "OOS期")
+                    & (pd.to_numeric(s21_cmp["K"], errors="coerce") == 10)
+                ].copy()
+                if not oos21.empty:
+                    q1,q2,q3 = st.columns(3)
+                    for label, col in [("S1原模型","q1"),("S2加權候選","q2"),("S2.1分支模型","q3")]:
+                        row = oos21[oos21["模型"].astype(str) == label]
+                        if row.empty:
+                            continue
+                        val = row.iloc[0]
+                        target = {"q1":q1,"q2":q2,"q3":q3}[col]
+                        target.metric(
+                            f"{label} OOS Top10",
+                            fmt(val.get("Precision"),2,"%"),
+                            f"Recall {fmt(val.get('Recall'),2,'%')}"
+                        )
+
+                st.markdown("#### S1 vs S2 vs S2.1")
+                show21 = s21_cmp.copy()
+                for c in ["Precision","Recall","Lift"]:
+                    if c in show21.columns:
+                        show21[c] = pd.to_numeric(show21[c], errors="coerce").round(3)
+                table(show21, height=430)
+
+                if not s21_cand.empty:
+                    st.markdown("#### 分支輪替候選（只用開發期排序）")
+                    table(s21_cand, height=300)
+
+                if not s21_attr.empty:
+                    st.markdown("#### S2.1 Top20 主要來源分支")
+                    table(s21_attr, height=260)
+
             st.warning(
-                "S2 現階段仍是候選研究模型，不會因為單次 OOS 表現較高就自動取代正式排行榜。"
+                "S2 / S2.1 現階段仍是候選研究模型，不會因為單次 OOS 表現較高就自動取代正式排行榜。"
                 "只有在 Precision、Recall、Lift、不同年份與市場環境都保持穩定後，才會升級成正式排名引擎。"
             )
 
