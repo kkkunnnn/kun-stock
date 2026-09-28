@@ -1539,7 +1539,7 @@ if not weekly_model_all.empty:
             "S2 Base PR","S2 General PR","S2 Ignition PR","S2 SecondLeg PR",
             "正式模型版本","S2狀態","主模型分數","50%潛力判定","進場時機分數",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
-            "風險扣分","啟動階段","進場判定","起漲原因","進場風險",
+            "風險扣分","啟動階段","進場判定","過熱分類","起漲原因","進場風險",
             "全球環境分數","台股環境分數","產業海外順風分數",
             "全球環境判定","台股環境判定"
         ] if c in weekly_model_all.columns
@@ -1841,7 +1841,7 @@ elif page == "今日 Top 10":
                 )
 
         st.markdown("## 今日波段候選")
-        st.caption("先以 S2_E_BALANCED 評估全市場波段爆發潛力，再排除短線過熱與暫不考慮標的。首頁名次是「可操作候選排名」，不是全市場 S2 名次；50% 是研究與回測目標，不代表保證報酬。")
+        st.caption("先以 S2_E_BALANCED 評估全市場波段爆發潛力；短線過熱不再一律淘汰，會保留具第二段延續條件的強勢股，只排除末端過熱與暫不考慮標的。首頁名次是「可操作候選排名」，不是全市場 S2 名次；50% 是研究與回測目標，不代表保證報酬。")
 
         if "正式模型版本" in rank.columns:
             live_versions = rank["正式模型版本"].dropna().astype(str)
@@ -1854,15 +1854,28 @@ elif page == "今日 Top 10":
             elif not live_versions.empty:
                 st.success(f"✅ 今日正式排名模型：{live_versions.iloc[0]}")
 
-        # 首頁 Top 10 只放「仍具操作意義」的標的。
-        # 暫不考慮 / 短線過熱 不應佔用 Top10 名額。
-        eligible_labels = ["可觀察進場", "等待回檔", "等待突破"]
+        # 首頁 Top 10：保留可操作標的，也保留具 Second-Leg 延續條件的強勢過熱股。
+        # 真正排除的是「末端過熱」與「暫不考慮」，不是單純漲多。
+        eligible_labels = ["可觀察進場", "等待回檔", "等待突破", "強勢過熱"]
         top_pool = rank.copy()
         if "進場判定" in top_pool.columns:
             entry_text = top_pool["進場判定"].astype(str)
             mask = False
             for label in eligible_labels:
                 mask = mask | entry_text.str.contains(label, na=False)
+
+            # 舊資料尚未產生「過熱分類」時，先用同一套條件即時計算，避免等下一個交易日才生效。
+            if "過熱分類" in top_pool.columns:
+                healthy_hot = top_pool["過熱分類"].astype(str).str.contains("強勢延續型過熱", na=False)
+            else:
+                stage_hot = top_pool.get("啟動階段", pd.Series("", index=top_pool.index)).astype(str).str.contains("⑤ 過熱", na=False)
+                s2 = pd.to_numeric(top_pool.get("主模型分數"), errors="coerce")
+                gen = pd.to_numeric(top_pool.get("S2 General PR"), errors="coerce")
+                sec = pd.to_numeric(top_pool.get("S2 SecondLeg PR"), errors="coerce")
+                risk = pd.to_numeric(top_pool.get("風險扣分"), errors="coerce").fillna(0)
+                healthy_hot = stage_hot & (s2 >= 70) & (gen >= 60) & (sec >= 70) & (risk < 35)
+
+            mask = mask | healthy_hot
             top_pool = top_pool[mask].copy()
 
         sort_col = "主模型排名" if "主模型排名" in top_pool.columns else "一週模型排名"
