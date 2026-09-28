@@ -26,62 +26,98 @@ _FINMIND_ASYNC_BROKEN = False
 
 
 def safe_tpex_daily(date):
-    """Robust TPEx daily quotes for GitHub Actions.
-
-    The legacy TPEx website endpoint can intermittently fail/block cloud runners.
-    Use the official TPEx OpenAPI snapshot first and only accept rows when its
-    embedded trading date matches the requested date. This prevents TWSE-only
-    partial universes from silently passing as a complete market.
-    """
+    """Fetch the requested TPEx trading date robustly from official TPEx sources."""
+    import time
     import requests
 
-    url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+    req_date = pd.Timestamp(date).date()
+    roc = f"{req_date.year - 1911}/{req_date.month:02d}/{req_date.day:02d}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://www.tpex.org.tw/",
+    }
+
+    # 1) Historical official TPEx endpoint: supports the exact requested trading date.
+    url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php"
+    params = {"l": "zh-tw", "o": "json", "d": roc, "s": "0,asc,0"}
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=35)
+            resp.raise_for_status()
+            data = resp.json()
+            rows = data.get("aaData", [])
+            if rows:
+                out = []
+                for row in rows:
+                    if len(row) < 9:
+                        continue
+                    code = str(row[0]).strip()
+                    name = str(row[1]).strip()
+                    try:
+                        vol = float(str(row[8]).replace(",", "").strip())
+                    except Exception:
+                        vol = np.nan
+                    out.append({
+                        "股票代號": code,
+                        "股票名稱": name,
+                        "成交股數": vol,
+                        "市場": "上櫃",
+                    })
+                df = pd.DataFrame(out)
+                if not df.empty:
+                    print(f"✅ TPEx歷史行情：{len(df)} 筆，要求交易日 {req_date}")
+                    return df
+            last_error = f"aaData空白，HTTP {resp.status_code}"
+        except Exception as e:
+            last_error = str(e)[:180]
+        time.sleep(1.5 * (attempt + 1))
+
+    # 2) Official TPEx OpenAPI fallback. Only accept it when its payload date matches.
+    openapi = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
     try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(openapi, timeout=35, headers=headers)
         resp.raise_for_status()
         rows = resp.json()
-        if not isinstance(rows, list) or not rows:
-            return pd.DataFrame()
+        if isinstance(rows, list) and rows:
+            def pick(d, *keys):
+                for k in keys:
+                    if k in d and str(d.get(k, "")).strip() not in {"", "None"}:
+                        return d.get(k)
+                return None
 
-        def pick(d, *keys):
-            for k in keys:
-                if k in d and str(d.get(k, "")).strip() not in {"", "None"}:
-                    return d.get(k)
-            return None
+            def parse_date(v):
+                x = str(v or "").strip().replace("/", "").replace("-", "")
+                if len(x) == 7 and x.isdigit():
+                    return pd.Timestamp(year=int(x[:3])+1911, month=int(x[3:5]), day=int(x[5:7])).date()
+                if len(x) == 8 and x.isdigit():
+                    return pd.Timestamp(year=int(x[:4]), month=int(x[4:6]), day=int(x[6:8])).date()
+                return None
 
-        def roc_to_date(v):
-            x = str(v or "").strip().replace("/", "")
-            if len(x) == 7 and x.isdigit():
-                return pd.Timestamp(year=int(x[:3]) + 1911, month=int(x[3:5]), day=int(x[5:7])).date()
-            if len(x) == 8 and x.isdigit():
-                return pd.Timestamp(year=int(x[:4]), month=int(x[4:6]), day=int(x[6:8])).date()
-            return None
-
-        payload_date = roc_to_date(pick(rows[0], "Date", "date", "日期"))
-        req_date = pd.Timestamp(date).date()
-        if payload_date != req_date:
-            return pd.DataFrame()
-
-        out=[]
-        for r in rows:
-            code = str(pick(r, "SecuritiesCompanyCode", "Code", "股票代號", "代號") or "").strip()
-            name = str(pick(r, "CompanyName", "SecuritiesCompanyName", "Name", "股票名稱", "名稱") or "").strip()
-            vol = pick(r, "TradingShares", "Trading_Volume", "成交股數")
-            try:
-                vol = float(str(vol).replace(",", "").strip())
-            except Exception:
-                vol = np.nan
-            if code:
-                out.append({"股票代號": code, "股票名稱": name, "成交股數": vol, "市場": "上櫃"})
-
-        df=pd.DataFrame(out)
-        if not df.empty:
-            print(f"✅ TPEx OpenAPI：{len(df)} 筆，交易日 {payload_date}")
-        return df
+            payload_date = parse_date(pick(rows[0], "Date", "date", "日期"))
+            if payload_date == req_date:
+                out = []
+                for r in rows:
+                    code = str(pick(r, "SecuritiesCompanyCode", "Code", "股票代號", "代號") or "").strip()
+                    name = str(pick(r, "CompanyName", "SecuritiesCompanyName", "Name", "股票名稱", "名稱") or "").strip()
+                    vol = pick(r, "TradingShares", "Trading_Volume", "成交股數")
+                    try:
+                        vol = float(str(vol).replace(",", "").strip())
+                    except Exception:
+                        vol = np.nan
+                    if code:
+                        out.append({"股票代號": code, "股票名稱": name, "成交股數": vol, "市場": "上櫃"})
+                df = pd.DataFrame(out)
+                if not df.empty:
+                    print(f"✅ TPEx OpenAPI備援：{len(df)} 筆，交易日 {payload_date}")
+                    return df
     except Exception as e:
-        print(f"⚠️ TPEx OpenAPI 失敗：{str(e)[:140]}")
-        return pd.DataFrame()
+        last_error = f"{last_error}; OpenAPI={str(e)[:120]}"
 
+    print(f"❌ TPEx行情取得失敗（{req_date}）：{last_error}")
+    return pd.DataFrame()
 
 def _yfinance_taiwan_batch(stock_ids, start_date, end_date):
     """FinMind 額度不足時，以 Yahoo Finance 批次補台股 OHLCV。"""
@@ -236,11 +272,12 @@ def sanitize_code(source: str) -> str:
         source,
     )
 
-    # GitHub Actions 上舊 TPEx 網頁端點可能被擋；改用官方 OpenAPI。
-    source = source.replace(
-        'tp = 取得上櫃行情(\\n                date\\n            )',
-        'tp = safe_tpex_daily(date)'
+    # GitHub Actions 上改由 robust TPEx wrapper 取得「指定交易日」上櫃行情。
+    tpex_call_pattern = re.compile(
+        r'tp\\s*=\\s*取得上櫃行情\\(\\s*date\\s*\\)',
+        re.S,
     )
+    source = tpex_call_pattern.sub('tp = safe_tpex_daily(date)', source)
     return source
 
 
