@@ -2748,10 +2748,8 @@ elif page == "市場消息分析":
             st.markdown(f"### {n['title']}")
             st.caption(f"{n['source']}｜{n['date']}")
             st.markdown(
-                f"**真正影響焦點：** {theme}  
-"
-                f"**可能受影響市場：** {markets}  
-"
+                f"**真正影響焦點：** {theme}  \n"
+                f"**可能受影響市場：** {markets}  \n"
                 f"**主要時間尺度：** {horizon}"
             )
             if n.get("link"):
