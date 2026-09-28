@@ -272,12 +272,20 @@ def sanitize_code(source: str) -> str:
         source,
     )
 
-    # GitHub Actions 上改由 robust TPEx wrapper 取得「指定交易日」上櫃行情。
-    tpex_call_pattern = re.compile(
-        r'tp\\s*=\\s*取得上櫃行情\\(\\s*date\\s*\\)',
-        re.S,
+    # GitHub Actions 上強制停用 Notebook 內舊 TPEx 函式，
+    # 所有「取得上櫃行情(...)」呼叫都改走 safe_tpex_daily。
+    # 先改函式定義名稱，避免後續全域替換把 helper 自己覆蓋掉。
+    source = re.sub(
+        r'def\\s+取得上櫃行情\\s*\\(',
+        'def 取得上櫃行情_legacy(',
+        source,
+        count=1,
     )
-    source = tpex_call_pattern.sub('tp = safe_tpex_daily(date)', source)
+    source = re.sub(
+        r'(?<!def )取得上櫃行情\\s*\\(',
+        'safe_tpex_daily(',
+        source,
+    )
     return source
 
 
