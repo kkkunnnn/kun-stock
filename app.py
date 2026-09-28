@@ -1217,6 +1217,93 @@ def twii_market_chart(d):
     return f
 
 
+def twii_line_chart(d):
+    if d is None or d.empty:
+        return None
+    x=d.tail(120).copy()
+    f=go.Figure()
+    f.add_trace(go.Scatter(
+        x=x["日期"], y=x["收盤"], mode="lines", name="加權指數",
+        line=dict(width=2.2), fill="tozeroy", fillcolor="rgba(37,99,235,.10)"
+    ))
+    f.add_trace(go.Scatter(x=x["日期"],y=x["MA20"],mode="lines",name="MA20",line=dict(width=1.3)))
+    f.add_trace(go.Scatter(x=x["日期"],y=x["MA60"],mode="lines",name="MA60",line=dict(width=1.2)))
+    f.update_layout(
+        height=390, margin=dict(l=8,r=8,t=12,b=8), hovermode="x unified",
+        legend=dict(orientation="h",y=1.02,x=0), template="plotly_dark"
+    )
+    return f
+
+
+def twii_volume_chart(d):
+    if d is None or d.empty or "成交量" not in d.columns:
+        return None
+    x=d.tail(80).copy()
+    f=go.Figure(go.Bar(x=x["日期"],y=x["成交量"],name="成交量"))
+    f.update_layout(height=220,margin=dict(l=8,r=8,t=8,b=8),template="plotly_dark",showlegend=False)
+    return f
+
+
+def twii_technical_chart(d):
+    if d is None or d.empty:
+        return None
+    x=d.tail(100).copy()
+    f=go.Figure()
+    f.add_trace(go.Scatter(x=x["日期"],y=x["RSI14"],mode="lines",name="RSI14"))
+    f.add_hline(y=70,line_dash="dash",opacity=.5)
+    f.add_hline(y=30,line_dash="dash",opacity=.5)
+    f.update_yaxes(range=[0,100],title="RSI")
+    f.update_layout(height=250,margin=dict(l=8,r=8,t=8,b=8),template="plotly_dark",hovermode="x unified")
+    return f
+
+
+def twii_macd_chart(d):
+    if d is None or d.empty:
+        return None
+    x=d.tail(100).copy()
+    f=go.Figure()
+    f.add_trace(go.Scatter(x=x["日期"],y=x["MACD"],mode="lines",name="MACD"))
+    f.add_trace(go.Scatter(x=x["日期"],y=x["Signal"],mode="lines",name="Signal"))
+    f.add_trace(go.Bar(x=x["日期"],y=x["Hist"],name="Histogram",opacity=.55))
+    f.add_hline(y=0,line_width=1,opacity=.45)
+    f.update_layout(height=250,margin=dict(l=8,r=8,t=8,b=8),template="plotly_dark",hovermode="x unified")
+    return f
+
+
+def market_breadth_snapshot(rank_df, domestic_summary):
+    out={"up":0,"down":0,"flat":0,"above_ma20":np.nan,"up5":np.nan,"up20":np.nan}
+    if rank_df is not None and not rank_df.empty:
+        ret=pd.to_numeric(rank_df.get("日報酬率"),errors="coerce")
+        if ret is not None:
+            out["up"]=int((ret>0).sum())
+            out["down"]=int((ret<0).sum())
+            out["flat"]=int((ret==0).sum())
+    if domestic_summary is not None and not domestic_summary.empty:
+        r=domestic_summary.iloc[0]
+        out["above_ma20"]=pd.to_numeric(pd.Series([r.get("站上MA20比例")]),errors="coerce").iloc[0]
+        out["up5"]=pd.to_numeric(pd.Series([r.get("5日上漲比例")]),errors="coerce").iloc[0]
+        out["up20"]=pd.to_numeric(pd.Series([r.get("20日上漲比例")]),errors="coerce").iloc[0]
+    return out
+
+
+def institution_flow_snapshot(rank_df):
+    cols={
+        "外資":"外資近5日買賣超（張）",
+        "投信":"投信近5日買賣超（張）",
+        "自營商":"自營商近5日買賣超（張）",
+        "三大法人":"三大法人近5日合計（張）",
+    }
+    out={}
+    if rank_df is None or rank_df.empty:
+        return {k:np.nan for k in cols}
+    for k,c in cols.items():
+        if c in rank_df.columns:
+            out[k]=pd.to_numeric(rank_df[c],errors="coerce").sum(min_count=1)
+        else:
+            out[k]=np.nan
+    return out
+
+
 def twii_snapshot(d):
     if d is None or d.empty:
         return {}
@@ -1454,12 +1541,12 @@ if page != "功能首頁":
         st.caption(f"目前頁面：{page}")
 
 if page == "功能首頁":
-    st.markdown("## 大盤走勢")
+    st.markdown("## 大盤看盤")
     twii_hist = load_twii_market_history()
     twii_snap = twii_snapshot(twii_hist)
 
     if twii_snap:
-        h1,h2,h3,h4,hmenu = st.columns([1.3,1,1,1,.42])
+        h1,h2,h3,h4,hmenu = st.columns([1.45,1,1,1,.45])
         h1.metric("加權指數", fmt(twii_snap.get("close"),2), f'{fmt(twii_snap.get("change"),2)} ({fmt(twii_snap.get("pct"),2,"%")})')
         h2.metric("開盤",fmt(twii_snap.get("open"),2))
         h3.metric("最高",fmt(twii_snap.get("high"),2))
@@ -1470,10 +1557,48 @@ if page == "功能首頁":
                 st.button("📰 市場消息分析", key="market_menu_news", use_container_width=True, on_click=goto_page, args=("市場消息分析",))
                 st.button("📐 技術分析", key="market_menu_tech", use_container_width=True, on_click=goto_page, args=("大盤技術分析",))
                 st.button("🤖 AI交易決策輔助", key="market_menu_ai", use_container_width=True, on_click=goto_page, args=("AI交易決策輔助",))
-        fig=twii_market_chart(twii_hist)
-        if fig is not None:
-            st.plotly_chart(fig,use_container_width=True)
-        st.caption(f'資料日期：{pd.to_datetime(twii_snap.get("date")).strftime("%Y-%m-%d")}｜每日收盤資料，晚上更新後可作完整盤後分析。')
+
+        tab1,tab2,tab3 = st.tabs(["走勢","K線","技術"])
+        with tab1:
+            _line=twii_line_chart(twii_hist)
+            if _line is not None:
+                st.plotly_chart(_line,use_container_width=True)
+            _vol=twii_volume_chart(twii_hist)
+            if _vol is not None:
+                st.plotly_chart(_vol,use_container_width=True)
+        with tab2:
+            _k=twii_market_chart(twii_hist)
+            if _k is not None:
+                st.plotly_chart(_k,use_container_width=True)
+        with tab3:
+            _rsi=twii_technical_chart(twii_hist)
+            _macd=twii_macd_chart(twii_hist)
+            if _rsi is not None:
+                st.plotly_chart(_rsi,use_container_width=True)
+            if _macd is not None:
+                st.plotly_chart(_macd,use_container_width=True)
+
+        breadth=market_breadth_snapshot(rank,domestic_market_summary)
+        flows=institution_flow_snapshot(rank)
+        st.markdown("### 市場明細")
+        b1,b2,b3,b4=st.columns(4)
+        b1.metric("上漲家數",f'{breadth["up"]} 家')
+        b2.metric("下跌家數",f'{breadth["down"]} 家')
+        b3.metric("站上 MA20",fmt(breadth["above_ma20"],1,"%"))
+        b4.metric("5日上漲比例",fmt(breadth["up5"],1,"%"))
+
+        st.markdown("#### 三大法人近 5 日")
+        f1,f2,f3,f4=st.columns(4)
+        f1.metric("外資",fmt(flows.get("外資"),0," 張"))
+        f2.metric("投信",fmt(flows.get("投信"),0," 張"))
+        f3.metric("自營商",fmt(flows.get("自營商"),0," 張"))
+        f4.metric("三大法人合計",fmt(flows.get("三大法人"),0," 張"))
+
+        st.caption(
+            f'資料日期：{pd.to_datetime(twii_snap.get("date")).strftime("%Y-%m-%d")}｜'
+            '大盤價格使用公開市場資料；法人區塊為目前股票池個股近 5 日買賣超加總，'
+            '屬盤後觀察口徑，不等同交易所全市場即時統計。'
+        )
     else:
         st.info("暫時無法載入加權指數走勢。")
 
