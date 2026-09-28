@@ -20,6 +20,13 @@ from regime_validation import (
     summarize_regime_exit,
     build_regime_gate_table,
 )
+from selection_model_v2_analysis import (
+    build_precision_recall_table,
+    build_feature_diagnostics,
+    build_false_negative_table,
+    build_runup_buckets,
+    build_ignition_timing,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -123,6 +130,12 @@ def compute_features(g: pd.DataFrame) -> pd.DataFrame:
 
     ma20 = c.rolling(20, min_periods=20).mean()
     g["ma20_bias"] = (c / ma20 - 1) * 100
+    prior60_low = c.rolling(60, min_periods=60).min()
+    prior20_high = c.rolling(20, min_periods=20).max()
+    prior60_high = c.rolling(60, min_periods=60).max()
+    g["prior60_runup"] = (c / prior60_low - 1) * 100
+    g["dd20_high"] = (c / prior20_high - 1) * 100
+    g["dd60_high"] = (c / prior60_high - 1) * 100
     g["vol_ratio"] = v / v.rolling(20, min_periods=20).mean().replace(0, np.nan)
 
     ret1 = c.pct_change()
@@ -143,6 +156,9 @@ def compute_features(g: pd.DataFrame) -> pd.DataFrame:
     future_mfe = np.full(n, np.nan)
     future_mae = np.full(n, np.nan)
     future_end = np.full(n, np.nan)
+    days_to_hit20 = np.full(n, np.nan)
+    days_to_hit30 = np.full(n, np.nan)
+    days_to_hit50 = np.full(n, np.nan)
     label_end = [pd.NaT] * n
 
     closes = c.to_numpy(dtype=float)
@@ -154,11 +170,19 @@ def compute_features(g: pd.DataFrame) -> pd.DataFrame:
             future_mfe[i] = (future.max() / base - 1) * 100
             future_mae[i] = (future.min() / base - 1) * 100
             future_end[i] = (future[-1] / base - 1) * 100
+            path_ret = (future / base - 1) * 100
+            for threshold, arr in [(20, days_to_hit20), (30, days_to_hit30), (50, days_to_hit50)]:
+                hit_idx = np.where(path_ret >= threshold)[0]
+                if len(hit_idx):
+                    arr[i] = int(hit_idx[0] + 1)
             label_end[i] = dates[i+40]
 
     g["mfe40"] = future_mfe
     g["mae40"] = future_mae
     g["ret40_end"] = future_end
+    g["days_to_hit20"] = days_to_hit20
+    g["days_to_hit30"] = days_to_hit30
+    g["days_to_hit50"] = days_to_hit50
     g["label_end_date"] = label_end
     g["hit20"] = np.where(pd.notna(g["mfe40"]), g["mfe40"] >= 20, np.nan)
     g["hit30"] = np.where(pd.notna(g["mfe40"]), g["mfe40"] >= 30, np.nan)
@@ -230,6 +254,13 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
             "hit50": r.get("hit50"),
             "train_samples": len(train),
             "train_base_hit50": float(train["hit50"].astype(float).mean() * 100),
+            "days_to_hit20": r.get("days_to_hit20"),
+            "days_to_hit30": r.get("days_to_hit30"),
+            "days_to_hit50": r.get("days_to_hit50"),
+            "prior60_runup": r.get("prior60_runup"),
+            "dd20_high": r.get("dd20_high"),
+            "dd60_high": r.get("dd60_high"),
+            **{f: r.get(f) for f in FEATURES},
         })
 
     out = pd.DataFrame(out_rows)
@@ -554,6 +585,12 @@ def main():
         regime_exit_summary,
     )
 
+    selection_pr = build_precision_recall_table(res)
+    selection_features = build_feature_diagnostics(res)
+    selection_false_negatives = build_false_negative_table(res)
+    selection_runup = build_runup_buckets(res)
+    selection_ignition = build_ignition_timing(res)
+
     res.to_csv(DATA_DIR / "walkforward_results.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
@@ -570,6 +607,11 @@ def main():
     regime_signal_summary.to_csv(DATA_DIR / "walkforward_regime_signal_summary.csv", index=False, encoding="utf-8-sig")
     regime_exit_summary.to_csv(DATA_DIR / "walkforward_regime_exit_summary.csv", index=False, encoding="utf-8-sig")
     regime_gate.to_csv(DATA_DIR / "walkforward_regime_gate.csv", index=False, encoding="utf-8-sig")
+    selection_pr.to_csv(DATA_DIR / "selection_v2_precision_recall.csv", index=False, encoding="utf-8-sig")
+    selection_features.to_csv(DATA_DIR / "selection_v2_feature_diagnostics.csv", index=False, encoding="utf-8-sig")
+    selection_false_negatives.to_csv(DATA_DIR / "selection_v2_false_negatives.csv", index=False, encoding="utf-8-sig")
+    selection_runup.to_csv(DATA_DIR / "selection_v2_runup_buckets.csv", index=False, encoding="utf-8-sig")
+    selection_ignition.to_csv(DATA_DIR / "selection_v2_ignition_timing.csv", index=False, encoding="utf-8-sig")
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
@@ -593,6 +635,8 @@ def main():
         "Regime版本": "RG-1.0",
         "Regime資料": "TWII/NDX/SOX/VIX/USDTWD + 現存股票池breadth",
         "Regime用途": "只做歷史條件化驗證，不用OOS結果重新挑參數",
+        "Selection診斷版本": "S2-DIAG-1.0",
+        "Selection診斷": "Precision/Recall + False Negative + 特徵區分力 + 爆發前已漲幅 + 到+50時間",
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -607,6 +651,16 @@ def main():
     print(robustness_scorecard.head(20).to_string(index=False))
     print("\n✅ Regime gate")
     print(regime_gate.to_string(index=False))
+    print("\n✅ Selection V2 Precision / Recall")
+    print(selection_pr.to_string(index=False))
+    print("\n✅ Selection V2 Feature diagnostics")
+    print(selection_features.head(20).to_string(index=False))
+    print("\n✅ Selection V2 False negatives")
+    print(selection_false_negatives.to_string(index=False))
+    print("\n✅ Selection V2 Prior-run buckets")
+    print(selection_runup.to_string(index=False))
+    print("\n✅ Selection V2 Ignition timing")
+    print(selection_ignition.to_string(index=False))
 
 
 if __name__ == "__main__":
