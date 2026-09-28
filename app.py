@@ -2786,9 +2786,10 @@ elif page == "大盤技術分析":
         st.markdown("### 型態結構與盤面判讀")
         st.write(f"目前結構判定為 **{_tv['trend']} / {_tv['momentum']}**。若接近壓力區但動能沒有同步增強，需留意假突破；若守住支撐且 MACD 柱狀體重新擴張，才較像有效突破延續。")
         st.write("主力吸籌/出貨不能只從指數 K 線直接確認；需要搭配法人、成交量與市場廣度，因此本頁不會把單一價量型態直接定義為主力行為。")
-        st.success(f"**目前盤面強弱：** {_tv['trend']}、動能 {_tv['momentum']}  
-
-**高機率劇本：** {_tv['scenario']}")
+        st.success(
+            f"**目前盤面強弱：** {_tv['trend']}、動能 {_tv['momentum']}  \n\n"
+            f"**高機率劇本：** {_tv['scenario']}"
+        )
 
 elif page == "AI交易決策輔助":
     st.markdown("## 🤖 AI 交易決策輔助")
@@ -2812,8 +2813,11 @@ elif page == "AI交易決策輔助":
         st.markdown("### 機率較高的方向")
         st.write(_ai["scenario"])
         st.markdown("### 決策摘要")
-        st.success(f"**{_ai['stance']}｜{_ai['action']}**  
-綜合分數 {fmt(_ai['score'],1)}。立場由技術面、台股環境與全球環境共同決定；若支撐/壓力或跨市場訊號改變，結論也應同步更新。")
+        st.success(
+            f"**{_ai['stance']}｜{_ai['action']}**  \n"
+            f"綜合分數 {fmt(_ai['score'],1)}。立場由技術面、台股環境與全球環境共同決定；"
+            f"若支撐/壓力或跨市場訊號改變，結論也應同步更新。"
+        )
 
 elif page == "全球市場":
     st.markdown("## 市場環境 Gate")
