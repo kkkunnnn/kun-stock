@@ -1298,19 +1298,92 @@ if page != "功能首頁":
 
 if page == "功能首頁":
     st.markdown("## 今天想看什麼？")
-    st.caption("點選功能卡片直接進入對應頁面。一般使用者不需要理解模型名稱，就能從『找股票 → 看個股 → 看環境 → 看風險』完成整個操作流程。")
+    st.caption("首頁先給摘要，再點卡片進入完整功能。讓使用者不用先理解模型，也能很快知道今天市場發生什麼。")
+
+    # 首頁即時摘要
+    entry_text = rank.get("進場判定", pd.Series("", index=rank.index)).astype(str)
+    stage_text = rank.get("啟動階段", pd.Series("", index=rank.index)).astype(str)
+    can_enter_n = int(entry_text.str.contains("可觀察進場", na=False).sum())
+    pullback_n = int(entry_text.str.contains("等待回檔", na=False).sum())
+    breakout_n = int(entry_text.str.contains("等待突破", na=False).sum())
+    overheat_n = int(entry_text.str.contains("短線過熱", na=False).sum())
+    avoid_n = int(entry_text.str.contains("暫不考慮", na=False).sum())
+    just_started_n = int(stage_text.str.contains("剛啟動", na=False).sum())
+
+    tw_regime = "資料不足"
+    tw_score = np.nan
+    if not domestic_market_summary.empty:
+        _tw = domestic_market_summary.iloc[0]
+        tw_regime = str(_tw.get("台股環境判定","資料不足"))
+        tw_score = _tw.get("台股環境分數",np.nan)
+
+    global_regime = "資料不足"
+    global_score = np.nan
+    if not global_market_summary.empty:
+        _g = global_market_summary.iloc[0]
+        global_regime = str(_g.get("全球環境判定","資料不足"))
+        global_score = _g.get("全球環境分數",np.nan)
+
+    new_entry_n = 0
+    riser_n = 0
+    if not weekly_daily_change.empty:
+        new_entry_n = int(
+            weekly_daily_change.get("新進可觀察進場", pd.Series(False,index=weekly_daily_change.index))
+            .fillna(False).astype(bool).sum()
+        )
+        if "一週排名變化" in weekly_daily_change.columns:
+            riser_n = int((pd.to_numeric(weekly_daily_change["一週排名變化"],errors="coerce") > 0).sum())
+
+    top_industry = "—"
+    top_industry_score = np.nan
+    if "產業別" in rank.columns and "主模型分數" in rank.columns:
+        _ind = rank.copy()
+        _ind["主模型分數"] = pd.to_numeric(_ind["主模型分數"],errors="coerce")
+        _agg = (
+            _ind.dropna(subset=["產業別","主模型分數"])
+            .groupby("產業別")
+            .agg(平均分=("主模型分數","mean"),檔數=("股票代號","count"))
+        )
+        _agg = _agg[_agg["檔數"] >= 3].sort_values("平均分",ascending=False)
+        if not _agg.empty:
+            top_industry = str(_agg.index[0])
+            top_industry_score = float(_agg.iloc[0]["平均分"])
+
+    snapshot_days = 0
+    if not ranking_history_all.empty and "快照日期" in ranking_history_all.columns:
+        snapshot_days = int(pd.to_datetime(ranking_history_all["快照日期"],errors="coerce").dt.date.nunique())
 
     menu_items = [
-        ("🔥", "今日機會", "查看目前仍具操作意義的波段候選", "今日 Top 10"),
-        ("🔎", "個股查詢", "搜尋股票並查看評分、支撐壓力與交易計畫", "個股分析"),
-        ("🏆", "全市場排行", "查看上市＋上櫃完整 S2 排名與篩選", "完整排名"),
-        ("🌏", "市場環境", "查看台股、全球市場、匯率、利率與風險環境", "全球市場"),
-        ("⚡", "今日異動", "找出排名上升、新進候選與訊號變化", "每日變化"),
-        ("🏭", "產業雷達", "從產業角度查看強弱與領先族群", "產業分析"),
-        ("🛡️", "風險監控", "檢查過熱、轉弱與風險偏高標的", "風險監控"),
-        ("🧪", "模型驗證", "查看 Precision、Recall、Lift 與 OOS 驗證", "專業驗證"),
-        ("📈", "回測中心", "查看模型歷史績效與後續報酬驗證", "V6 回測"),
-        ("🔬", "研究中心", "查看較進階的模型與研究資料", "一週模型"),
+        ("🔥", "今日機會",
+         f"可觀察 {can_enter_n}｜等回檔 {pullback_n}｜等突破 {breakout_n}",
+         "查看目前仍具操作意義的波段候選", "今日 Top 10"),
+        ("🔎", "個股查詢",
+         f"上市＋上櫃共 {len(rank)} 檔",
+         "搜尋股票並查看評分、支撐壓力與交易計畫", "個股分析"),
+        ("🏆", "全市場排行",
+         f"完整股票池 {len(rank)} 檔｜剛啟動 {just_started_n}",
+         "查看完整 S2 排名並依條件篩選", "完整排名"),
+        ("🌏", "市場環境",
+         f"台股 {tw_regime} {fmt(tw_score,0)}｜全球 {global_regime} {fmt(global_score,0)}",
+         "查看台股、全球市場、匯率、利率與風險環境", "全球市場"),
+        ("⚡", "今日異動",
+         f"排名上升 {riser_n}｜新進可觀察 {new_entry_n}",
+         "找出排名上升、新進候選與訊號變化", "每日變化"),
+        ("🏭", "產業雷達",
+         f"目前領先：{top_industry} {fmt(top_industry_score,1)}",
+         "從產業角度查看強弱與領先族群", "產業分析"),
+        ("🛡️", "風險監控",
+         f"短線過熱 {overheat_n}｜暫不考慮 {avoid_n}",
+         "檢查過熱、轉弱與風險偏高標的", "風險監控"),
+        ("🧪", "模型驗證",
+         f"正式模型：{model_version}",
+         "查看 Precision、Recall、Lift 與 OOS 驗證", "專業驗證"),
+        ("📈", "回測中心",
+         f"已累積 {snapshot_days} 個訊號日",
+         "查看模型歷史績效與後續報酬驗證", "V6 回測"),
+        ("🔬", "研究中心",
+         "進階模型與研究資料",
+         "給想深入理解模型的使用者", "一週模型"),
     ]
 
     for i in range(0, len(menu_items), 3):
@@ -1319,13 +1392,16 @@ if page == "功能首頁":
             k = i + j
             if k >= len(menu_items):
                 break
-            icon, title, desc, target = menu_items[k]
+            icon, title, summary, desc, target = menu_items[k]
             with cols[j]:
                 st.markdown(
-                    f'<div class="card" style="min-height:145px">'
+                    f'<div class="card" style="min-height:165px">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:start">'
                     f'<div style="font-size:1.7rem">{icon}</div>'
+                    f'<span class="rank">查看</span></div>'
                     f'<div class="title">{title}</div>'
-                    f'<div class="muted" style="margin-top:6px">{desc}</div>'
+                    f'<div style="font-size:1.02rem;font-weight:800;margin-top:7px">{summary}</div>'
+                    f'<div class="muted" style="margin-top:7px">{desc}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -1339,9 +1415,9 @@ if page == "功能首頁":
 
     st.markdown("### 快速開始")
     c1,c2,c3 = st.columns(3)
-    c1.info("第一次使用：先看「今日機會」")
-    c2.info("已有特定股票：直接用上方搜尋")
-    c3.info("想了解市場是否適合進場：看「市場環境」")
+    c1.success("第一次使用 → 先看「今日機會」")
+    c2.info("已有股票 → 用上方快速搜尋")
+    c3.warning("準備進場前 → 先看「市場環境」與「風險監控」")
 
 elif page == "今日 Top 10":
     weekly_ready = "一週模型排名" in rank.columns and rank["一週模型排名"].notna().any()
