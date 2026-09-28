@@ -1145,7 +1145,9 @@ if not weekly_model_all.empty:
             "股票代號","一週模型排名","主模型排名","起漲潛力排名","波段爆發排名",
             "一週起漲分數","波段爆發分數","50%歷史型態命中率","50%歷史型態PR",
             "相似樣本40日最高報酬均值","突破強度分數","動能持續分數","活躍爆發分數",
-            "波動爆發潛力","主模型分數","50%潛力判定","進場時機分數",
+            "波動爆發潛力","舊主模型分數","S2主模型分數",
+            "S2 Base PR","S2 General PR","S2 Ignition PR","S2 SecondLeg PR",
+            "正式模型版本","主模型分數","50%潛力判定","進場時機分數",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
             "風險扣分","啟動階段","進場判定","起漲原因","進場風險",
             "全球環境分數","台股環境分數","產業海外順風分數",
@@ -1218,7 +1220,7 @@ if page == "今日 Top 10":
                 )
 
         st.markdown("## 1～2 個月 50% 波段目標 Top 10")
-        st.caption("主排名目標是找出未來 1～2 個月具大波段爆發潛力、且仍有操作意義的個股。首頁會排除『暫不考慮』與『短線過熱』；等待回檔 / 等待突破會直接顯示對應觀察價位。50% 是篩選與回測目標，不是保證報酬。")
+        st.caption("正式主排名已升級為 S2_E_BALANCED：歷史50%型態 45% + General 25% + Ignition 15% + Second-Leg 15%。主排名目標是找出未來 1～2 個月具大波段爆發潛力、且仍有操作意義的個股；進場時機與市場環境仍作操作層。50% 是篩選與回測目標，不是保證報酬。")
 
         # 首頁 Top 10 只放「仍具操作意義」的標的。
         # 暫不考慮 / 短線過熱 不應佔用 Top10 名額。
@@ -1280,6 +1282,7 @@ if page == "今日 Top 10":
                         f'<div class="muted">收盤價：<b>{fmt(r.get("收盤價"),2)}</b></div>'
                         f'<div class="score">{fmt(r.get("主模型分數"),2)}</div>'
                         f'<div class="muted">{r.get("50%潛力判定","—")} ｜ {entry_label}</div>'
+                        f'<div class="muted">S2：Base {fmt(r.get("S2 Base PR"),0)} ｜ General {fmt(r.get("S2 General PR"),0)} ｜ Ignition {fmt(r.get("S2 Ignition PR"),0)} ｜ Second-Leg {fmt(r.get("S2 SecondLeg PR"),0)}</div>'
                     )
                     if action_hint:
                         card_html += f'<div class="muted">{action_hint}</div>'
@@ -2454,9 +2457,15 @@ elif page == "個股分析":
         st.markdown("### 一週模型")
         a,b,c,d=st.columns(4)
         a.metric("主模型排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
-        b.metric("主模型分數",fmt(row.get("主模型分數"),1))
+        b.metric("S2主模型分數",fmt(row.get("主模型分數"),1))
         c.metric("波段爆發分數",fmt(row.get("波段爆發分數"),1))
         d.metric("進場時機",fmt(row.get("進場時機分數"),1))
+
+        s21,s22,s23,s24=st.columns(4)
+        s21.metric("Base PR",fmt(row.get("S2 Base PR"),0))
+        s22.metric("General PR",fmt(row.get("S2 General PR"),0))
+        s23.metric("Ignition PR",fmt(row.get("S2 Ignition PR"),0))
+        s24.metric("Second-Leg PR",fmt(row.get("S2 SecondLeg PR"),0))
         st.caption(f"{row.get('50%潛力判定','—')} ｜ 啟動階段：{row.get('啟動階段','—')}")
 
         x1,x2,x3,x4=st.columns(4)
