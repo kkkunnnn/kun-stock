@@ -1,4 +1,4 @@
-name: Historical Walk-Forward Validation
+name: Full Historical Research Pipeline
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   walkforward:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300
 
     steps:
       - name: Checkout repository
@@ -45,10 +45,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/walkforward_*.csv data/selection_v2_*.csv data/selection_v21_*.csv data/ignition_v2_*.csv data/discovery_v1_*.csv data/walkforward_price_cache.csv.gz
+          git add data/walkforward_*.csv data/selection_v2_*.csv data/selection_v21_*.csv data/ignition_v2_*.csv data/discovery_v1_*.csv data/macro_v1_*.csv data/walkforward_price_cache.csv.gz
           if git diff --cached --quiet; then
             echo "No walk-forward changes to commit."
           else
-            git commit -m "Update historical walk-forward validation"
+            git commit -m "Update full historical research pipeline"
             git push
           fi
