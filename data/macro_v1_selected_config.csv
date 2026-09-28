@@ -1,0 +1,2 @@
+﻿selected_config,selection_rule,inputs,method
+M0_S2_ONLY,只用2025前開發期挑Global Macro權重；2025起OOS只驗證,SPX/NDX/SOX/VIX/TNX/USD-TWD/WTI/Brent/DXY + TSM/NVDA/AMD/AVGO/MU/AAPL/MSFT/AMZN,60日股票跨市場相關 × 當期全球市場變化，形成個股化宏觀對齊分數

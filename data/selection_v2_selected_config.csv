@@ -1,2 +1,2 @@
 ﻿selected_config,selection_rule,target,branches
-S2_D_SECOND,只用2025前開發期挑設定；2025起OOS只驗證不參與選擇,40交易日內最高漲幅>=50%,General + Ignition + SecondLeg
+S2_E_BALANCED,只用2025前開發期挑設定；2025起OOS只驗證不參與選擇,40交易日內最高漲幅>=50%,General + Ignition + SecondLeg
