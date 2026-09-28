@@ -195,7 +195,7 @@ def compare_selected(results_ranked: pd.DataFrame, selected: str) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-def hot_cohort_summary(results_ranked: pd.DataFrame, selected: str) -> pd.DataFrame:
+def hot_cohort_summary(results_ranked: pd.DataFrame, selected: str, s2_selected: str) -> pd.DataFrame:
     d = results_ranked.copy()
     rows = []
     for period_name, p in [
@@ -217,7 +217,7 @@ def hot_cohort_summary(results_ranked: pd.DataFrame, selected: str) -> pd.DataFr
                 "+50命中率": float((_num(g, "hit50") == 1).mean() * 100),
                 "40日MFE中位數": float(_num(g, "mfe40").median()),
                 "40日MAE中位數": float(_num(g, "mae40").median()),
-                "S2中位數": float(_num(g, f"{selected.replace('OH_', '')}_score").median()) if f"{selected.replace('OH_', '')}_score" in g.columns else np.nan,
+                "S2中位數": float(_num(g, f"{s2_selected}_score").median()),
                 "SecondLeg PR中位數": float(_num(g, "s2_second_pct").median()),
                 "風險代理中位數": float(_num(g, "overheat_risk_proxy").median()),
             })
