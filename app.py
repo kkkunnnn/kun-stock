@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import yfinance as yf
 
 from model_validation import (
     attach_professional_forward_metrics,
@@ -1160,6 +1161,161 @@ def news(name, code, limit=8):
         return []
 
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_twii_market_history(period="6mo", interval="1d"):
+    """首頁大盤圖：Yahoo Finance 加權指數，5 分鐘快取。"""
+    try:
+        d = yf.download("^TWII", period=period, interval=interval, auto_adjust=False, progress=False, threads=False)
+        if d is None or d.empty:
+            return pd.DataFrame()
+        if isinstance(d.columns, pd.MultiIndex):
+            d.columns = [c[0] for c in d.columns]
+        d = d.reset_index()
+        date_col = "Datetime" if "Datetime" in d.columns else "Date"
+        d = d.rename(columns={date_col:"日期","Open":"開盤","High":"最高","Low":"最低","Close":"收盤","Volume":"成交量"})
+        d["日期"] = pd.to_datetime(d["日期"], errors="coerce")
+        for c in ["開盤","最高","最低","收盤","成交量"]:
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["日期","收盤"]).sort_values("日期")
+        d["MA5"] = d["收盤"].rolling(5).mean()
+        d["MA20"] = d["收盤"].rolling(20).mean()
+        d["MA60"] = d["收盤"].rolling(60).mean()
+        delta = d["收盤"].diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        d["RSI14"] = 100 - (100 / (1 + rs))
+        ema12 = d["收盤"].ewm(span=12, adjust=False).mean()
+        ema26 = d["收盤"].ewm(span=26, adjust=False).mean()
+        d["MACD"] = ema12 - ema26
+        d["Signal"] = d["MACD"].ewm(span=9, adjust=False).mean()
+        d["Hist"] = d["MACD"] - d["Signal"]
+        return d
+    except Exception:
+        return pd.DataFrame()
+
+
+def twii_market_chart(d):
+    if d is None or d.empty:
+        return None
+    x=d.tail(120).copy()
+    f=go.Figure()
+    f.add_trace(go.Candlestick(
+        x=x["日期"], open=x["開盤"], high=x["最高"], low=x["最低"], close=x["收盤"],
+        name="加權指數", increasing_line_color="#e5484d", decreasing_line_color="#22a06b"
+    ))
+    for c,n in [("MA5","MA5"),("MA20","MA20"),("MA60","MA60")]:
+        if c in x.columns:
+            f.add_trace(go.Scatter(x=x["日期"],y=x[c],mode="lines",name=n,line=dict(width=1.25)))
+    f.update_layout(
+        height=455, margin=dict(l=8,r=8,t=12,b=8), hovermode="x unified",
+        xaxis_rangeslider_visible=False, legend=dict(orientation="h",y=1.02,x=0),
+        template="plotly_dark"
+    )
+    return f
+
+
+def twii_snapshot(d):
+    if d is None or d.empty:
+        return {}
+    r=d.iloc[-1]
+    p=d.iloc[-2] if len(d)>1 else r
+    close=float(r["收盤"]); prev=float(p["收盤"])
+    ch=close-prev; pct=(close/prev-1)*100 if prev else np.nan
+    return {
+        "date": r["日期"], "close": close, "change": ch, "pct": pct,
+        "open": r.get("開盤",np.nan), "high":r.get("最高",np.nan), "low":r.get("最低",np.nan),
+        "volume":r.get("成交量",np.nan), "ma5":r.get("MA5",np.nan), "ma20":r.get("MA20",np.nan),
+        "ma60":r.get("MA60",np.nan), "rsi":r.get("RSI14",np.nan), "macd":r.get("MACD",np.nan),
+        "signal":r.get("Signal",np.nan), "hist":r.get("Hist",np.nan)
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def market_news(limit=14):
+    queries=[
+        "台股 OR 加權指數 OR 台積電 OR Fed OR 美國通膨 OR 美債 OR 美元 OR 黃金 OR 比特幣",
+        "global markets stocks bonds dollar gold bitcoin Fed inflation Taiwan"
+    ]
+    trusted=("中央社","Reuters","路透","Bloomberg","鉅亨","工商時報","經濟日報","MoneyDJ","Yahoo奇摩股市","聯合新聞網")
+    rows=[]
+    for q in queries:
+        url="https://news.google.com/rss/search?q="+quote(q)+"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        try:
+            req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0"})
+            with urllib.request.urlopen(req,timeout=12) as resp:
+                root=ET.fromstring(resp.read())
+            for item in root.findall(".//item"):
+                src=item.find("source")
+                source=src.text.strip() if src is not None and src.text else ""
+                title=item.findtext("title",default="").strip()
+                if not title: continue
+                score=2 if any(x.lower() in source.lower() for x in trusted) else 0
+                kw=("Fed","聯準會","CPI","PCE","利率","美債","美元","台積電","半導體","關稅","戰爭","油價","黃金","比特幣","AI","通膨")
+                score += sum(1 for k in kw if k.lower() in title.lower())
+                rows.append({"title":title,"link":item.findtext("link",default="").strip(),"date":item.findtext("pubDate",default="").strip(),"source":source,"score":score})
+        except Exception:
+            pass
+    seen=set(); out=[]
+    for r in sorted(rows,key=lambda x:x["score"],reverse=True):
+        k=r["title"][:80]
+        if k in seen: continue
+        seen.add(k); out.append(r)
+        if len(out)>=limit: break
+    return out
+
+
+def news_impact(title):
+    t=str(title)
+    buckets=[]
+    if any(k in t for k in ["Fed","聯準會","利率","美債","CPI","PCE","通膨"]):
+        buckets.append(("利率/通膨","股票、美債、美元、黃金、加密貨幣","短中期"))
+    if any(k in t for k in ["台積電","半導體","AI","NVIDIA","輝達","晶片"]):
+        buckets.append(("科技/半導體景氣","台股、Nasdaq、SOX、相關供應鏈","短中期"))
+    if any(k in t for k in ["關稅","制裁","戰爭","地緣","中國","美中"]):
+        buckets.append(("政策/地緣風險","股票、美元、黃金、原油","短線情緒到中期"))
+    if any(k in t for k in ["油價","原油","OPEC"]):
+        buckets.append(("能源/通膨","原油、股票、債券、美元","短中期"))
+    if any(k in t for k in ["比特幣","Bitcoin","加密"]):
+        buckets.append(("風險偏好/加密資產","加密貨幣、科技股、美元","短線為主"))
+    if not buckets:
+        buckets.append(("市場風險偏好","股票與主要風險資產","短線情緒"))
+    return buckets[0]
+
+
+def market_technical_view(d):
+    s=twii_snapshot(d)
+    if not s: return {}
+    close=s["close"]; ma20=s["ma20"]; ma60=s["ma60"]; rsi=s["rsi"]; hist=s["hist"]
+    trend="偏多" if pd.notna(ma20) and close>ma20 and (pd.isna(ma60) or ma20>=ma60) else "偏空" if pd.notna(ma20) and close<ma20 else "整理"
+    x=d.tail(20)
+    support=float(x["最低"].min()) if "最低" in x else np.nan
+    resistance=float(x["最高"].max()) if "最高" in x else np.nan
+    momentum="偏強" if pd.notna(rsi) and rsi>=55 and pd.notna(hist) and hist>0 else "偏弱" if pd.notna(rsi) and rsi<45 and pd.notna(hist) and hist<0 else "中性"
+    scenario="突破延續" if trend=="偏多" and momentum=="偏強" else "反彈仍需確認" if trend=="偏空" and momentum!="偏弱" else "區間整理等待方向" if trend=="整理" else "弱勢延續風險"
+    return {"trend":trend,"support":support,"resistance":resistance,"momentum":momentum,"scenario":scenario,**s}
+
+
+def ai_market_decision(d, domestic_summary, global_summary):
+    tv=market_technical_view(d)
+    if not tv: return {}
+    ds=float(pd.to_numeric(pd.Series([domestic_summary.iloc[0].get("台股環境分數")]),errors="coerce").iloc[0]) if domestic_summary is not None and not domestic_summary.empty else 50
+    gs=float(pd.to_numeric(pd.Series([global_summary.iloc[0].get("全球環境分數")]),errors="coerce").iloc[0]) if global_summary is not None and not global_summary.empty else 50
+    tech=65 if tv["trend"]=="偏多" else 35 if tv["trend"]=="偏空" else 50
+    score=.45*tech+.30*ds+.25*gs
+    stance="偏多" if score>=60 else "偏空" if score<42 else "中性"
+    action="進攻" if score>=68 and tv["momentum"]=="偏強" else "保守" if score<42 else "等待確認"
+    conflicts=[]
+    if tv["trend"]=="偏多" and tv["momentum"]=="偏弱": conflicts.append("趨勢仍偏多，但短線動能轉弱")
+    if ds>=60 and gs<45: conflicts.append("台股內部偏強，但全球環境偏逆風")
+    if ds<45 and gs>=60: conflicts.append("全球環境偏多，但台股內部廣度偏弱")
+    if not conflicts: conflicts.append("主要訊號目前沒有明顯互相衝突")
+    risk="跌破20日支撐、海外風險資產同步轉弱或利率快速上行"
+    return {"score":score,"stance":stance,"action":action,"conflicts":conflicts,"risk":risk,"tech":tech,"domestic":ds,"global":gs,**tv}
+
+
 def table(df, height=500):
     st.dataframe(df, use_container_width=True, hide_index=True, height=height)
 
@@ -1282,7 +1438,8 @@ if go_stock and quick_stock:
 
 pages = [
     "功能首頁","今日 Top 10","個股分析","完整排名","全球市場",
-    "每日變化","產業分析","風險監控","專業驗證","V6 回測","一週模型"
+    "每日變化","產業分析","風險監控","市場消息分析","大盤技術分析","AI交易決策輔助",
+    "專業驗證","V6 回測","一週模型"
 ]
 if "nav" not in st.session_state:
     st.session_state.nav = "功能首頁"
@@ -1297,6 +1454,29 @@ if page != "功能首頁":
         st.caption(f"目前頁面：{page}")
 
 if page == "功能首頁":
+    st.markdown("## 大盤走勢")
+    twii_hist = load_twii_market_history()
+    twii_snap = twii_snapshot(twii_hist)
+
+    if twii_snap:
+        h1,h2,h3,h4,hmenu = st.columns([1.3,1,1,1,.42])
+        h1.metric("加權指數", fmt(twii_snap.get("close"),2), f'{fmt(twii_snap.get("change"),2)} ({fmt(twii_snap.get("pct"),2,"%")})')
+        h2.metric("開盤",fmt(twii_snap.get("open"),2))
+        h3.metric("最高",fmt(twii_snap.get("high"),2))
+        h4.metric("最低",fmt(twii_snap.get("low"),2))
+        with hmenu:
+            with st.popover("☰", use_container_width=True):
+                st.markdown("#### 大盤分析")
+                st.button("📰 市場消息分析", key="market_menu_news", use_container_width=True, on_click=goto_page, args=("市場消息分析",))
+                st.button("📐 技術分析", key="market_menu_tech", use_container_width=True, on_click=goto_page, args=("大盤技術分析",))
+                st.button("🤖 AI交易決策輔助", key="market_menu_ai", use_container_width=True, on_click=goto_page, args=("AI交易決策輔助",))
+        fig=twii_market_chart(twii_hist)
+        if fig is not None:
+            st.plotly_chart(fig,use_container_width=True)
+        st.caption(f'資料日期：{pd.to_datetime(twii_snap.get("date")).strftime("%Y-%m-%d")}｜每日收盤資料，晚上更新後可作完整盤後分析。')
+    else:
+        st.info("暫時無法載入加權指數走勢。")
+
     st.markdown("## 今天想看什麼？")
     st.caption("首頁先給摘要，再點卡片進入完整功能。讓使用者不用先理解模型，也能很快知道今天市場發生什麼。")
 
@@ -2430,6 +2610,87 @@ elif page == "一週模型":
             "起漲原因","進場風險","最終分數"
         ] if c in d.columns]
         table(d[cols],height=620)
+
+elif page == "市場消息分析":
+    st.markdown("## 📰 市場消息分析")
+    st.caption("主動篩選可信度較高、且可能真正影響跨資產定價的市場消息。新聞標題來自公開 RSS；下方影響判讀是量化規則摘要，不把單一新聞當成確定因果。")
+    items=market_news(12)
+    if not items:
+        st.info("目前無法取得市場新聞。")
+    else:
+        for n in items[:8]:
+            theme,markets,horizon=news_impact(n["title"])
+            st.markdown(f"### {n['title']}")
+            st.caption(f"{n['source']}｜{n['date']}")
+            st.markdown(
+                f"**真正影響焦點：** {theme}  
+"
+                f"**可能受影響市場：** {markets}  
+"
+                f"**主要時間尺度：** {horizon}"
+            )
+            if n.get("link"):
+                st.link_button("查看原始新聞",n["link"])
+            st.divider()
+
+    st.markdown("### 市場目前真正交易的核心邏輯")
+    _ai=ai_market_decision(load_twii_market_history(),domestic_market_summary,global_market_summary)
+    if _ai:
+        st.write(f"目前台股技術結構 **{_ai['trend']}**，台股環境分數 {fmt(_ai['domestic'],1)}，全球環境分數 {fmt(_ai['global'],1)}。市場定價核心仍應同時看利率/美元、全球科技風險偏好與台股內部廣度，而不是只看單一標題。")
+        st.markdown(f"**利多：** 若全球風險資產與台股廣度同步改善，且指數守穩 MA20，偏多訊號較一致。")
+        st.markdown(f"**利空：** 若利率上行、美元轉強，同時指數跌破短期支撐，風險資產壓力會放大。")
+        st.markdown(f"**市場可能的下一步：** {_ai['scenario']}。")
+    st.caption("歷史案例需依事件類型個別比對；本頁目前不把不同政策、戰爭或通膨事件硬套成同一案例。")
+
+elif page == "大盤技術分析":
+    st.markdown("## 📐 大盤技術分析")
+    _d=load_twii_market_history()
+    _tv=market_technical_view(_d)
+    _fig=twii_market_chart(_d)
+    if _fig is not None: st.plotly_chart(_fig,use_container_width=True)
+    if not _tv:
+        st.info("目前沒有足夠的大盤資料。")
+    else:
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("趨勢方向",_tv["trend"])
+        c2.metric("RSI14",fmt(_tv["rsi"],1))
+        c3.metric("MACD柱",fmt(_tv["hist"],2))
+        c4.metric("動能",_tv["momentum"])
+        st.markdown(f"**支撐：** {fmt(_tv['support'],2)}　｜　**壓力：** {fmt(_tv['resistance'],2)}")
+        st.markdown(f"**均線：** MA5 {fmt(_tv['ma5'],2)}｜MA20 {fmt(_tv['ma20'],2)}｜MA60 {fmt(_tv['ma60'],2)}")
+        vol_text="成交量資料需以交易所正式口徑交叉確認；指數資料供趨勢參考。"
+        st.info(vol_text)
+        st.markdown("### 型態結構與盤面判讀")
+        st.write(f"目前結構判定為 **{_tv['trend']} / {_tv['momentum']}**。若接近壓力區但動能沒有同步增強，需留意假突破；若守住支撐且 MACD 柱狀體重新擴張，才較像有效突破延續。")
+        st.write("主力吸籌/出貨不能只從指數 K 線直接確認；需要搭配法人、成交量與市場廣度，因此本頁不會把單一價量型態直接定義為主力行為。")
+        st.success(f"**目前盤面強弱：** {_tv['trend']}、動能 {_tv['momentum']}  
+
+**高機率劇本：** {_tv['scenario']}")
+
+elif page == "AI交易決策輔助":
+    st.markdown("## 🤖 AI 交易決策輔助")
+    st.caption("同時整合技術結構、台股市場廣度、全球市場環境與風險訊號。這是決策輔助，不是交易指令。")
+    _d=load_twii_market_history()
+    _ai=ai_market_decision(_d,domestic_market_summary,global_market_summary)
+    if not _ai:
+        st.info("目前資料不足。")
+    else:
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("綜合立場",_ai["stance"])
+        c2.metric("行動節奏",_ai["action"])
+        c3.metric("台股環境",fmt(_ai["domestic"],1))
+        c4.metric("全球環境",fmt(_ai["global"],1))
+        st.markdown("### 現在市場在交易什麼")
+        st.write(f"目前核心是 **{_ai['trend']} 的指數結構 + {_ai['momentum']} 的短線動能**，並受到全球風險偏好與台股內部廣度共同影響。")
+        st.markdown("### 最大風險")
+        st.warning(_ai["risk"])
+        st.markdown("### 互相矛盾的訊號")
+        for x in _ai["conflicts"]: st.write("• "+x)
+        st.markdown("### 機率較高的方向")
+        st.write(_ai["scenario"])
+        st.markdown("### 決策摘要")
+        st.success(f"**{_ai['stance']}｜{_ai['action']}**  
+綜合分數 {fmt(_ai['score'],1)}。立場由技術面、台股環境與全球環境共同決定；若支撐/壓力或跨市場訊號改變，結論也應同步更新。")
 
 elif page == "全球市場":
     st.markdown("## 市場環境 Gate")
