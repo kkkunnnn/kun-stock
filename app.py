@@ -377,8 +377,25 @@ def build_ai_trade_plan(hist, row):
     entry_label = str(row.get("進場判定", ""))
     entry_score = pd.to_numeric(pd.Series([row.get("進場時機分數")]), errors="coerce").iloc[0]
 
-    # 買入觀察區：依啟動階段調整。
-    if "剛啟動" in stage:
+    # 買入觀察區：先服從「進場判定」，再用啟動階段微調。
+    # 避免出現「等待回檔」卻把買入區畫在現價上方的矛盾。
+    if "等待回檔" in entry_label:
+        entry_low = max(short_support, current - 1.0 * atr)
+        entry_high = min(current, max(entry_low, short_support + 0.45 * atr))
+        if entry_high < entry_low:
+            entry_high = entry_low
+        plan_type = "等待回檔型"
+    elif "等待突破" in entry_label:
+        entry_low = max(current, short_res - 0.20 * atr)
+        entry_high = short_res + 0.30 * atr
+        plan_type = "突破確認型"
+    elif "可觀察進場" in entry_label:
+        entry_low = max(short_support, current - 0.8 * atr)
+        entry_high = min(current, short_support + 0.55 * atr)
+        if entry_high < entry_low:
+            entry_high = min(current, entry_low + 0.35 * atr)
+        plan_type = "回測支撐型"
+    elif "剛啟動" in stage:
         entry_low = max(short_support, current - 0.9 * atr)
         entry_high = min(current, short_support + 0.55 * atr)
         if entry_high < entry_low:
@@ -390,13 +407,13 @@ def build_ai_trade_plan(hist, row):
         plan_type = "突破確認型"
     elif "趨勢加速" in stage:
         entry_low = max(short_support, current - 1.0 * atr)
-        entry_high = max(entry_low, current - 0.35 * atr)
+        entry_high = min(current, max(entry_low, current - 0.35 * atr))
         plan_type = "等待回檔型"
     else:
         entry_low = max(short_support, current - 0.8 * atr)
         entry_high = min(current, short_support + 0.5 * atr)
         if entry_high < entry_low:
-            entry_high = entry_low + 0.35 * atr
+            entry_high = entry_low
         plan_type = "保守觀察型"
 
     # 停損／失效：支撐下方留 ATR 緩衝，避免單純碰線就被洗出。
