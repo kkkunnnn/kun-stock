@@ -138,11 +138,13 @@ def select_on_development(results_ranked: pd.DataFrame) -> tuple[str, pd.DataFra
         m50 = _metrics(dev, rcol, 50)
         hot_recall = _hot_winner_recall(dev, name)
 
+        # Keep the same goal structure as S2 model selection:
+        # prioritize Top10 precision, then Top20 precision and deeper recall.
+        # Hot-winner retention is reported and used only as a tie-break, not rewarded directly.
         objective = (
             0.45 * m10["Precision"]
             + 0.20 * m20["Precision"]
-            + 0.25 * m50["Recall"]
-            + 0.10 * (hot_recall if pd.notna(hot_recall) else 0)
+            + 0.35 * m50["Recall"]
         )
         row = {
             "config": name,
@@ -163,7 +165,7 @@ def select_on_development(results_ranked: pd.DataFrame) -> tuple[str, pd.DataFra
         rows.append(row)
 
     table = pd.DataFrame(rows).sort_values(
-        ["開發期目標分數", "Top10 Precision", "Top50 Recall"],
+        ["開發期目標分數", "Top10 Precision", "Top50 Recall", "過熱+50成功股保留率"],
         ascending=False,
     ).reset_index(drop=True)
     table["開發期排名"] = np.arange(1, len(table) + 1)
