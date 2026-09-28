@@ -42,6 +42,8 @@ DATA_DIR.mkdir(exist_ok=True)
 START_DATE = os.environ.get("WF_START_DATE", "2019-01-01")
 MODEL_VERSION = "P50-WF-1.1"
 ROUND_TRIP_COST_PCT = float(os.environ.get("EXIT_COST_PCT", "0.60"))
+REFRESH_DATA = os.environ.get("WF_REFRESH_DATA", "false").strip().lower() in {"1","true","yes","y"}
+PRICE_CACHE = DATA_DIR / "walkforward_price_cache.csv.gz"
 FEATURES = [
     "ret5", "ret20", "ret60", "rsi14", "vol_ratio",
     "atr_pct", "ma20_bias", "vol20_ann", "macd_hist",
@@ -61,6 +63,38 @@ def load_universe() -> list[str]:
         .tolist()
     )
     return ids
+
+
+def load_or_download_prices(ids: list[str]) -> pd.DataFrame:
+    """Reuse the historical price cache for model research unless an explicit refresh is requested."""
+    if PRICE_CACHE.exists() and not REFRESH_DATA:
+        try:
+            cached = pd.read_csv(
+                PRICE_CACHE,
+                dtype={"stock_id": str},
+                compression="gzip",
+                parse_dates=["date"],
+            )
+            cached["stock_id"] = cached["stock_id"].astype(str).str.zfill(4)
+            have = set(cached["stock_id"].dropna().unique())
+            need = set(str(x).zfill(4) for x in ids)
+            coverage = len(have & need) / max(len(need), 1)
+            if coverage >= 0.95 and len(cached) > 10000:
+                print(f"✅ 使用歷史價格快取：{len(cached):,} 列，股票覆蓋率 {coverage:.1%}")
+                return cached.sort_values(["stock_id","date"]).reset_index(drop=True)
+            print(f"⚠️ 快取股票覆蓋率只有 {coverage:.1%}，重新下載")
+        except Exception as e:
+            print(f"⚠️ 讀取價格快取失敗，重新下載：{str(e)[:120]}")
+
+    prices = download_prices(ids)
+    prices.to_csv(
+        PRICE_CACHE,
+        index=False,
+        encoding="utf-8",
+        compression="gzip",
+    )
+    print(f"✅ 已更新歷史價格快取：{PRICE_CACHE.name}")
+    return prices
 
 
 def download_prices(ids: list[str]) -> pd.DataFrame:
@@ -540,7 +574,7 @@ def summarize_exit_strategies(trades: pd.DataFrame) -> pd.DataFrame:
 def main():
     ids = load_universe()
     print(f"股票池：{len(ids)} 檔")
-    prices = download_prices(ids)
+    prices = load_or_download_prices(ids)
     dataset = make_dataset(prices)
     print(f"可用特徵列：{len(dataset):,}")
 
@@ -640,6 +674,8 @@ def main():
 
     metadata = pd.DataFrame([{
         "模型版本": MODEL_VERSION,
+        "歷史價格快取": "walkforward_price_cache.csv.gz",
+        "本次強制更新快取": REFRESH_DATA,
         "開始日期": START_DATE,
         "股票池": "目前可交易股票池（存在 survivorship bias）",
         "測試頻率": "每5交易日一個截面",
