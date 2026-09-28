@@ -55,6 +55,15 @@ from discovery_model_v1 import (
     compare_primary_plus_discovery,
     discovery_stock_samples,
 )
+from global_macro_model_v1 import (
+    download_macro_history,
+    attach_stock_macro_interactions,
+    add_macro_component,
+    add_macro_rankings,
+    select_macro_on_development,
+    compare_macro,
+    macro_feature_diagnostics,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -304,15 +313,20 @@ def weekly_test_dates(d: pd.DataFrame) -> list[pd.Timestamp]:
 
 
 def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> pd.DataFrame:
-    test = dataset[dataset["date"].eq(test_date)].copy()
+    test = dataset[
+        dataset["date"].eq(test_date)
+        & (pd.to_numeric(dataset["volume"], errors="coerce") >= 1_000_000)
+    ].copy()
     if test.empty:
         return pd.DataFrame()
 
-    # Embargo：只有 label_end_date 已嚴格早於 test_date 的歷史樣本才能進訓練。
+    # Embargo + point-in-time liquidity alignment:
+    # train only on historical stock-days that also satisfied >= 1,000 lots.
     train = dataset[
         dataset["label_end_date"].notna()
         & (pd.to_datetime(dataset["label_end_date"]) < test_date)
         & dataset["hit50"].notna()
+        & (pd.to_numeric(dataset["volume"], errors="coerce") >= 1_000_000)
     ].copy()
 
     if len(train) < 3000:
@@ -320,6 +334,7 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
 
     test = add_selection_v2_components(train, test)
     test = add_ignition_v2_components(train, test)
+    test = add_macro_component(train, test)
 
     means = train[FEATURES].mean()
     stds = train[FEATURES].std().replace(0, 1).fillna(1)
@@ -376,6 +391,15 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
             "rsi_delta5": r.get("rsi_delta5"),
             "macd_hist_delta5": r.get("macd_hist_delta5"),
             "dist_prev20_high": r.get("dist_prev20_high"),
+            "macro_v1_raw": r.get("macro_v1_raw"),
+            "sox_align": r.get("sox_align"),
+            "ndx_align": r.get("ndx_align"),
+            "techlead_align": r.get("techlead_align"),
+            "usd_align": r.get("usd_align"),
+            "oil_align": r.get("oil_align"),
+            "rate_align": r.get("rate_align"),
+            "riskoff_align": r.get("riskoff_align"),
+            "spx_align": r.get("spx_align"),
         })
 
     out = pd.DataFrame(out_rows)
@@ -645,6 +669,13 @@ def main():
     print(f"股票池：{len(ids)} 檔")
     prices = load_or_download_prices(ids)
     dataset = make_dataset(prices)
+
+    macro_history = download_macro_history(START_DATE)
+    if macro_history.empty:
+        print("⚠️ 全球市場資料下載失敗；Global Macro 模組將沒有有效輸入")
+    else:
+        dataset = attach_stock_macro_interactions(dataset, macro_history)
+
     print(f"可用特徵列：{len(dataset):,}")
 
     test_dates = weekly_test_dates(dataset)
@@ -683,6 +714,11 @@ def main():
     discovery_eval = evaluate_discovery(res, discovery_selected, s2_selected=s2_selected)
     discovery_combo = compare_primary_plus_discovery(res, discovery_selected, s2_selected=s2_selected)
     discovery_samples = discovery_stock_samples(res, discovery_selected, s2_selected=s2_selected)
+
+    res = add_macro_rankings(res, s2_selected=s2_selected)
+    macro_selected, macro_candidates = select_macro_on_development(res)
+    macro_comparison = compare_macro(res, macro_selected, s2_selected=s2_selected)
+    macro_features = macro_feature_diagnostics(res)
 
     summary = summarize(res)
 
@@ -770,6 +806,16 @@ def main():
         "candidate_pool": "S2_D_SECOND Top50之外",
         "purpose": "額外找出被主排名漏掉、但具有潛伏爆發特徵的股票",
     }]).to_csv(DATA_DIR / "discovery_v1_selected_config.csv", index=False, encoding="utf-8-sig")
+
+    macro_candidates.to_csv(DATA_DIR / "macro_v1_candidates.csv", index=False, encoding="utf-8-sig")
+    macro_comparison.to_csv(DATA_DIR / "macro_v1_comparison.csv", index=False, encoding="utf-8-sig")
+    macro_features.to_csv(DATA_DIR / "macro_v1_feature_diagnostics.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([{
+        "selected_config": macro_selected,
+        "selection_rule": "只用2025前開發期挑Global Macro權重；2025起OOS只驗證",
+        "inputs": "SPX/NDX/SOX/VIX/TNX/USD-TWD/WTI/Brent/DXY + TSM/NVDA/AMD/AVGO/MU/AAPL/MSFT/AMZN",
+        "method": "60日股票跨市場相關 × 當期全球市場變化，形成個股化宏觀對齊分數",
+    }]).to_csv(DATA_DIR / "macro_v1_selected_config.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
@@ -835,7 +881,13 @@ def main():
         "Discovery V1用途": "第二名單，專門找主排名漏掉的潛伏爆發候選，不取代S2主榜",
         "Discovery V1挑選原則": "只用2025前開發期挑設定；2025起OOS只驗證",
         "Discovery V1選定設定": discovery_selected,
-        "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
+        "Global Macro V1版本": "MACRO-1.0",
+        "Global Macro V1資料": "SPX/NDX/SOX/VIX/TNX/USD-TWD/WTI/Brent/DXY + 美國科技龍頭",
+        "Global Macro V1方法": "60日股票跨市場相關 × 當期全球市場變化，形成個股化宏觀對齊分數",
+        "Global Macro V1挑選原則": "只用2025前開發期挑權重；2025起OOS只驗證",
+        "Global Macro V1選定設定": macro_selected,
+        "歷史流動性條件": "每個測試日與訓練樣本皆要求 volume >= 1,000,000 shares（1,000張）",
+        "注意": "仍使用目前可交易股票池，存在 survivorship bias；歷史法人/基本面尚未完整 point-in-time 重建。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
 
@@ -891,6 +943,13 @@ def main():
     print(discovery_combo.to_string(index=False))
     print("\n✅ Discovery sample diagnostics")
     print(discovery_samples.to_string(index=False))
+    print("\n✅ Global Macro V1 candidates")
+    print(macro_candidates.to_string(index=False))
+    print(f"\n✅ Selected Global Macro config: {macro_selected}")
+    print("\n✅ S2 vs S2+GlobalMacro")
+    print(macro_comparison.to_string(index=False))
+    print("\n✅ Global Macro feature diagnostics")
+    print(macro_features.to_string(index=False))
 
 
 if __name__ == "__main__":
