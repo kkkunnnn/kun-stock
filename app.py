@@ -91,6 +91,10 @@ def goto_stock_detail(code):
     st.session_state.nav = "個股分析"
 
 
+def goto_page(page_name):
+    st.session_state.nav = page_name
+
+
 def status_css(s):
     if s == "趨勢健康": return "good"
     if s in ["等待回檔", "整理觀察", "一般觀察"]: return "warn"
@@ -1276,26 +1280,70 @@ if go_stock and quick_stock:
     st.session_state.nav = "個股分析"
     st.rerun()
 
-pages = ["今日 Top 10","個股分析","完整排名","全球市場","每日變化","產業分析","風險監控","專業驗證","V6 回測","一週模型"]
-nav_labels = {
-    "今日 Top 10":"首頁",
-    "個股分析":"個股",
-    "完整排名":"全市場",
-    "全球市場":"市場環境",
-    "每日變化":"異動",
-    "產業分析":"產業",
-    "風險監控":"風險",
-    "專業驗證":"模型驗證",
-    "V6 回測":"回測",
-    "一週模型":"研究",
-}
-if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
-page = st.radio(
-    "導覽", pages, horizontal=True, label_visibility="collapsed",
-    key="nav", format_func=lambda x: nav_labels.get(x,x)
-)
+pages = [
+    "功能首頁","今日 Top 10","個股分析","完整排名","全球市場",
+    "每日變化","產業分析","風險監控","專業驗證","V6 回測","一週模型"
+]
+if "nav" not in st.session_state:
+    st.session_state.nav = "功能首頁"
+page = st.session_state.nav
 
-if page == "今日 Top 10":
+# 非首頁頁面提供簡潔返回鍵，避免上方塞滿導覽標籤。
+if page != "功能首頁":
+    back1, back2 = st.columns([1,5])
+    with back1:
+        st.button("← 功能首頁", use_container_width=True, on_click=goto_page, args=("功能首頁",))
+    with back2:
+        st.caption(f"目前頁面：{page}")
+
+if page == "功能首頁":
+    st.markdown("## 今天想看什麼？")
+    st.caption("點選功能卡片直接進入對應頁面。一般使用者不需要理解模型名稱，就能從『找股票 → 看個股 → 看環境 → 看風險』完成整個操作流程。")
+
+    menu_items = [
+        ("🔥", "今日機會", "查看目前仍具操作意義的波段候選", "今日 Top 10"),
+        ("🔎", "個股查詢", "搜尋股票並查看評分、支撐壓力與交易計畫", "個股分析"),
+        ("🏆", "全市場排行", "查看上市＋上櫃完整 S2 排名與篩選", "完整排名"),
+        ("🌏", "市場環境", "查看台股、全球市場、匯率、利率與風險環境", "全球市場"),
+        ("⚡", "今日異動", "找出排名上升、新進候選與訊號變化", "每日變化"),
+        ("🏭", "產業雷達", "從產業角度查看強弱與領先族群", "產業分析"),
+        ("🛡️", "風險監控", "檢查過熱、轉弱與風險偏高標的", "風險監控"),
+        ("🧪", "模型驗證", "查看 Precision、Recall、Lift 與 OOS 驗證", "專業驗證"),
+        ("📈", "回測中心", "查看模型歷史績效與後續報酬驗證", "V6 回測"),
+        ("🔬", "研究中心", "查看較進階的模型與研究資料", "一週模型"),
+    ]
+
+    for i in range(0, len(menu_items), 3):
+        cols = st.columns(3)
+        for j in range(3):
+            k = i + j
+            if k >= len(menu_items):
+                break
+            icon, title, desc, target = menu_items[k]
+            with cols[j]:
+                st.markdown(
+                    f'<div class="card" style="min-height:145px">'
+                    f'<div style="font-size:1.7rem">{icon}</div>'
+                    f'<div class="title">{title}</div>'
+                    f'<div class="muted" style="margin-top:6px">{desc}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                st.button(
+                    f"進入 {title}",
+                    key=f"home_{target}",
+                    use_container_width=True,
+                    on_click=goto_page,
+                    args=(target,),
+                )
+
+    st.markdown("### 快速開始")
+    c1,c2,c3 = st.columns(3)
+    c1.info("第一次使用：先看「今日機會」")
+    c2.info("已有特定股票：直接用上方搜尋")
+    c3.info("想了解市場是否適合進場：看「市場環境」")
+
+elif page == "今日 Top 10":
     weekly_ready = "一週模型排名" in rank.columns and rank["一週模型排名"].notna().any()
 
     if weekly_ready:
