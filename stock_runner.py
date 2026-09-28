@@ -20,6 +20,38 @@ NOTEBOOK_PATH = ROOT / "股市V1-V5.ipynb"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def load_overheat_rule():
+    """Use development-selected walk-forward thresholds when available; otherwise keep the current conservative fallback."""
+    fallback = {
+        "selected_config": "OH_C_CURRENT",
+        "s2_min": 70.0,
+        "general_min": 60.0,
+        "second_min": 70.0,
+        "risk_max": 35.0,
+    }
+    p = DATA_DIR / "overheat_selected_config.csv"
+    if not p.exists():
+        return fallback
+    try:
+        d = pd.read_csv(p)
+        if d.empty:
+            return fallback
+        r = d.iloc[0]
+        name = str(r.get("selected_config", fallback["selected_config"]))
+        if name == "OH_EXCLUDE_ALL":
+            return {"selected_config": name}
+        if name == "OH_KEEP_ALL":
+            return {"selected_config": name}
+        return {
+            "selected_config": name,
+            "s2_min": float(r.get("s2_min", fallback["s2_min"])),
+            "general_min": float(r.get("general_min", fallback["general_min"])),
+            "second_min": float(r.get("second_min", fallback["second_min"])),
+            "risk_max": float(r.get("risk_max", fallback["risk_max"])),
+        }
+    except Exception as e:
+        print(f"⚠️ 過熱驗證設定讀取失敗，使用保守 fallback：{e}")
+        return fallback
 
 
 _FINMIND_ASYNC_BROKEN = False
@@ -1520,17 +1552,26 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
         sec = pd.to_numeric(out.get("S2 SecondLeg PR"), errors="coerce")
         risk = pd.to_numeric(out.get("風險扣分"), errors="coerce").fillna(0)
 
-        healthy_hot = (
-            hot
-            & (s2 >= 70)
-            & (gen >= 60)
-            & (sec >= 70)
-            & (risk < 35)
-        )
+        overheat_rule = load_overheat_rule()
+        rule_name = overheat_rule.get("selected_config", "OH_C_CURRENT")
+
+        if rule_name == "OH_EXCLUDE_ALL":
+            healthy_hot = pd.Series(False, index=out.index)
+        elif rule_name == "OH_KEEP_ALL":
+            healthy_hot = hot.copy()
+        else:
+            healthy_hot = (
+                hot
+                & (s2 >= overheat_rule.get("s2_min", 70))
+                & (gen >= overheat_rule.get("general_min", 60))
+                & (sec >= overheat_rule.get("second_min", 70))
+                & (risk < overheat_rule.get("risk_max", 35))
+            )
         terminal_hot = hot & ~healthy_hot
 
         out.loc[healthy_hot, "過熱分類"] = "強勢延續型過熱"
         out.loc[terminal_hot, "過熱分類"] = "末端過熱"
+        out["過熱規則"] = rule_name
 
         # 強勢延續型過熱保留在候選池，但仍提醒等待回檔，不直接追價。
         if "進場判定" in out.columns:
@@ -1792,7 +1833,7 @@ def main() -> None:
             "S2 Base PR", "S2 General PR", "S2 Ignition PR", "S2 SecondLeg PR",
             "正式模型版本", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
-            "風險扣分", "啟動階段", "進場判定", "過熱分類",
+            "風險扣分", "啟動階段", "進場判定", "過熱分類", "過熱規則",
             "全球環境分數", "台股環境分數", "產業海外順風分數",
             "收盤價", "V5綜合理由", "V5風險提示", "起漲原因", "進場風險"
         ]
