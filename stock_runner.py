@@ -1509,6 +1509,33 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
     # 既有進場時機/風險/市場環境欄位仍保留作操作層。
     out = apply_live_s2_balanced(out, history_df)
 
+    # 過熱不再一律淘汰：區分「強勢延續型過熱」與「末端過熱」。
+    # 這裡只改操作層，不改 S2 正式主分數。
+    # 門檻屬保守型 live rule，之後應再用歷史資料做專門 walk-forward 驗證。
+    out["過熱分類"] = ""
+    if "啟動階段" in out.columns:
+        hot = out["啟動階段"].astype(str).str.contains("⑤ 過熱", na=False)
+        s2 = pd.to_numeric(out.get("主模型分數"), errors="coerce")
+        gen = pd.to_numeric(out.get("S2 General PR"), errors="coerce")
+        sec = pd.to_numeric(out.get("S2 SecondLeg PR"), errors="coerce")
+        risk = pd.to_numeric(out.get("風險扣分"), errors="coerce").fillna(0)
+
+        healthy_hot = (
+            hot
+            & (s2 >= 70)
+            & (gen >= 60)
+            & (sec >= 70)
+            & (risk < 35)
+        )
+        terminal_hot = hot & ~healthy_hot
+
+        out.loc[healthy_hot, "過熱分類"] = "強勢延續型過熱"
+        out.loc[terminal_hot, "過熱分類"] = "末端過熱"
+
+        # 強勢延續型過熱保留在候選池，但仍提醒等待回檔，不直接追價。
+        if "進場判定" in out.columns:
+            out.loc[healthy_hot, "進場判定"] = "🟠 強勢過熱－等待回檔"
+
     out["起漲潛力排名"] = (
         pd.to_numeric(out["一週起漲分數"], errors="coerce")
         .rank(ascending=False, method="min")
@@ -1765,7 +1792,7 @@ def main() -> None:
             "S2 Base PR", "S2 General PR", "S2 Ignition PR", "S2 SecondLeg PR",
             "正式模型版本", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
-            "風險扣分", "啟動階段", "進場判定",
+            "風險扣分", "啟動階段", "進場判定", "過熱分類",
             "全球環境分數", "台股環境分數", "產業海外順風分數",
             "收盤價", "V5綜合理由", "V5風險提示", "起漲原因", "進場風險"
         ]
