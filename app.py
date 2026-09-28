@@ -1157,6 +1157,16 @@ if not sheets:
 rank = normalize(sheets.get("全部排名", pd.DataFrame()))
 
 if not weekly_model_all.empty:
+    # weekly_model_latest 內歷史型態欄位可能因前後兩次 merge 留成 _x/_y。
+    # App 這裡先統一成正式欄名，避免個股頁顯示空白。
+    weekly_model_all = weekly_model_all.copy()
+    for base_col in ["50%歷史型態命中率","50%歷史型態PR","相似樣本40日最高報酬均值"]:
+        if base_col not in weekly_model_all.columns:
+            for alt in [f"{base_col}_y", f"{base_col}_x"]:
+                if alt in weekly_model_all.columns:
+                    weekly_model_all[base_col] = pd.to_numeric(weekly_model_all[alt], errors="coerce")
+                    break
+
     weekly_cols = [
         c for c in [
             "股票代號","一週模型排名","主模型排名","起漲潛力排名","波段爆發排名",
