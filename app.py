@@ -20,26 +20,62 @@ from model_validation import (
     validation_readiness,
 )
 
-APP_TITLE = "台股 V1～V5 選股"
+APP_TITLE = "KunStock｜台股波段選股"
 DATA_DIR = Path(__file__).parent / "data"
 
-st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
 
 def css():
     st.markdown("""
     <style>
-    .block-container{padding-top:.7rem;padding-bottom:4rem;max-width:1450px}
+    :root{
+      --ks-blue:#2563eb; --ks-indigo:#4f46e5; --ks-green:#16a34a;
+      --ks-amber:#d97706; --ks-red:#dc2626; --ks-border:rgba(100,116,139,.18);
+    }
+    .block-container{padding-top:.65rem;padding-bottom:4.5rem;max-width:1480px}
     #MainMenu{visibility:hidden} footer{visibility:hidden}
-    .hero{border:1px solid rgba(100,116,139,.18);border-radius:24px;padding:20px 22px;margin-bottom:14px;background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(148,163,184,.04))}
-    .hero h1{margin:0;font-size:2rem}.hero p{margin:.35rem 0 0;opacity:.68}
-    div[data-testid="stMetric"]{background:rgba(148,163,184,.07);border:1px solid rgba(100,116,139,.16);padding:12px 14px;border-radius:16px}
-    .card{border:1px solid rgba(100,116,139,.18);border-radius:18px;padding:15px;margin-bottom:8px;background:rgba(148,163,184,.045)}
-    .rank{display:inline-block;background:rgba(37,99,235,.12);color:#2563eb;border-radius:999px;padding:3px 9px;font-size:.78rem;font-weight:800}
-    .title{font-size:1.12rem;font-weight:800;margin-top:7px}.score{font-size:1.65rem;font-weight:850;margin-top:6px}.muted{opacity:.66;font-size:.86rem}
+    header[data-testid="stHeader"]{background:rgba(255,255,255,.02)}
+    .ks-hero{
+      border:1px solid var(--ks-border); border-radius:24px; padding:20px 22px 18px;
+      margin-bottom:14px; background:
+      radial-gradient(circle at 10% 0%,rgba(37,99,235,.15),transparent 34%),
+      linear-gradient(135deg,rgba(37,99,235,.07),rgba(79,70,229,.025));
+      box-shadow:0 10px 30px rgba(15,23,42,.04)
+    }
+    .ks-brand{font-size:2rem;font-weight:900;letter-spacing:-.03em;margin:0}
+    .ks-sub{opacity:.68;margin-top:.3rem;font-size:.92rem}
+    .ks-status{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .ks-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--ks-border);
+      border-radius:999px;padding:5px 10px;font-size:.78rem;background:rgba(148,163,184,.055)}
+    .ks-section{margin-top:.3rem}
+    div[data-testid="stMetric"]{
+      background:rgba(148,163,184,.055); border:1px solid var(--ks-border);
+      padding:12px 14px;border-radius:16px;box-shadow:0 3px 14px rgba(15,23,42,.025)
+    }
+    .card{
+      border:1px solid var(--ks-border);border-radius:18px;padding:16px;margin-bottom:9px;
+      background:linear-gradient(180deg,rgba(148,163,184,.055),rgba(148,163,184,.028));
+      box-shadow:0 6px 22px rgba(15,23,42,.035)
+    }
+    .rank{display:inline-block;background:rgba(37,99,235,.12);color:#2563eb;border-radius:999px;
+      padding:3px 9px;font-size:.78rem;font-weight:850}
+    .title{font-size:1.12rem;font-weight:850;margin-top:7px}
+    .score{font-size:1.7rem;font-weight:900;margin-top:5px;letter-spacing:-.02em}
+    .muted{opacity:.68;font-size:.86rem;line-height:1.45}
     .good{color:#159447;font-weight:750}.warn{color:#b7791f;font-weight:750}.bad{color:#d64545;font-weight:750}
-    .news{padding:11px 2px;border-bottom:1px solid rgba(100,116,139,.15)}.news a{text-decoration:none;font-weight:700}.newsmeta{opacity:.6;font-size:.8rem;margin-top:4px}
-    @media(max-width:700px){.block-container{padding-left:.7rem;padding-right:.7rem}.hero{padding:15px;border-radius:18px}.hero h1{font-size:1.5rem}.card{border-radius:15px}h2{font-size:1.25rem!important}}
+    .news{padding:11px 2px;border-bottom:1px solid rgba(100,116,139,.15)}
+    .news a{text-decoration:none;font-weight:700}.newsmeta{opacity:.6;font-size:.8rem;margin-top:4px}
+    div[role="radiogroup"]{gap:.2rem}
+    div[role="radiogroup"] label{border-radius:999px;padding:.1rem .25rem}
+    .stButton>button{border-radius:12px;font-weight:700}
+    .ks-note{border-left:3px solid var(--ks-blue);padding:.55rem .8rem;background:rgba(37,99,235,.055);
+      border-radius:0 10px 10px 0;font-size:.86rem}
+    @media(max-width:700px){
+      .block-container{padding-left:.7rem;padding-right:.7rem}
+      .ks-hero{padding:15px;border-radius:18px}.ks-brand{font-size:1.55rem}
+      .card{border-radius:15px}h2{font-size:1.25rem!important}
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1202,13 +1238,62 @@ tech_ok = int(rank.get("技術分數",pd.Series(index=rank.index,dtype=float)).n
 v4_ok = int(rank.get("風險動能分數",pd.Series(index=rank.index,dtype=float)).notna().sum())
 coverage = min(tech_ok,v4_ok)/len(rank) if len(rank) else 0
 
-st.markdown(f'<div class="hero"><h1>📈 台股 V1～V5 選股</h1><p>資料基準日：{bd} ｜ 依 V1～V5 模型分數與風險條件排序</p></div>', unsafe_allow_html=True)
-if coverage < .95:
-    st.error(f"⚠️ 今日 V1/V4 完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
+model_version = "—"
+if "正式模型版本" in rank.columns:
+    vv = rank["正式模型版本"].dropna().astype(str)
+    if not vv.empty:
+        model_version = vv.iloc[0]
 
-pages = ["今日 Top 10","專業驗證","一週模型","全球市場","每日變化","V6 回測","個股分析","完整排名","風險監控","產業分析"]
+market_counts = rank.get("市場", pd.Series(dtype=str)).astype(str).value_counts().to_dict() if "市場" in rank.columns else {}
+st.markdown(
+    f'<div class="ks-hero">'
+    f'<div class="ks-brand">KunStock</div>'
+    f'<div class="ks-sub">台股波段選股與進場觀察｜資料基準日 {bd}</div>'
+    f'<div class="ks-status">'
+    f'<span class="ks-pill">📊 股票池 {len(rank)} 檔</span>'
+    f'<span class="ks-pill">上市 {market_counts.get("上市",0)}｜上櫃 {market_counts.get("上櫃",0)}</span>'
+    f'<span class="ks-pill">模型 {model_version}</span>'
+    f'<span class="ks-pill">資料完整度 {coverage:.0%}</span>'
+    f'</div></div>',
+    unsafe_allow_html=True,
+)
+if coverage < .95:
+    st.error(f"⚠️ 今日資料完整度只有 {min(tech_ok,v4_ok)}/{len(rank)}（{coverage:.0%}），排名不應視為完整市場比較。")
+
+# 全站快速搜尋：任何頁面都能直接跳到個股。
+search_opts = [""] + (
+    rank.sort_values("股票代號")
+    .apply(lambda r: f"{r.get('股票代號','')}  {r.get('股票名稱','')}", axis=1)
+    .tolist()
+)
+q1,q2 = st.columns([5,1])
+with q1:
+    quick_stock = st.selectbox("快速搜尋股票", search_opts, index=0, label_visibility="collapsed")
+with q2:
+    go_stock = st.button("查看個股", use_container_width=True, disabled=(quick_stock==""))
+if go_stock and quick_stock:
+    st.session_state.selected = quick_stock.split()[0]
+    st.session_state.nav = "個股分析"
+    st.rerun()
+
+pages = ["今日 Top 10","個股分析","完整排名","全球市場","每日變化","產業分析","風險監控","專業驗證","V6 回測","一週模型"]
+nav_labels = {
+    "今日 Top 10":"首頁",
+    "個股分析":"個股",
+    "完整排名":"全市場",
+    "全球市場":"市場環境",
+    "每日變化":"異動",
+    "產業分析":"產業",
+    "風險監控":"風險",
+    "專業驗證":"模型驗證",
+    "V6 回測":"回測",
+    "一週模型":"研究",
+}
 if "nav" not in st.session_state: st.session_state.nav = "今日 Top 10"
-page = st.radio("導覽", pages, horizontal=True, label_visibility="collapsed", key="nav")
+page = st.radio(
+    "導覽", pages, horizontal=True, label_visibility="collapsed",
+    key="nav", format_func=lambda x: nav_labels.get(x,x)
+)
 
 if page == "今日 Top 10":
     weekly_ready = "一週模型排名" in rank.columns and rank["一週模型排名"].notna().any()
@@ -1246,8 +1331,8 @@ if page == "今日 Top 10":
                     unsafe_allow_html=True,
                 )
 
-        st.markdown("## 1～2 個月 50% 波段目標 Top 10")
-        st.caption("正式主排名已升級為 S2_E_BALANCED：歷史50%型態 45% + General 25% + Ignition 15% + Second-Leg 15%。主排名目標是找出未來 1～2 個月具大波段爆發潛力、且仍有操作意義的個股；進場時機與市場環境仍作操作層。50% 是篩選與回測目標，不是保證報酬。")
+        st.markdown("## 今日波段候選")
+        st.caption("先以 S2_E_BALANCED 評估全市場波段爆發潛力，再排除短線過熱與暫不考慮標的。首頁名次是「可操作候選排名」，不是全市場 S2 名次；50% 是研究與回測目標，不代表保證報酬。")
 
         if "正式模型版本" in rank.columns:
             live_versions = rank["正式模型版本"].dropna().astype(str)
@@ -1314,7 +1399,8 @@ if page == "今日 Top 10":
                 with cc[j]:
                     card_html = (
                         f'<div class="card">'
-                        f'<span class="rank">#{int(r.get("首頁排名",k+1))}</span>'
+                        f'<span class="rank">可操作 #{int(r.get("首頁排名",k+1))}</span>'
+                        f'<span class="muted" style="margin-left:7px">全市場 S2 #{fmt(r.get("主模型排名"),0)}</span>'
                         f'<div class="title">{code}　{name}</div>'
                         f'<div class="muted">{r.get("產業別","—")} ｜ {stage}</div>'
                         f'<div class="muted">收盤價：<b>{fmt(r.get("收盤價"),2)}</b></div>'
@@ -2492,52 +2578,57 @@ elif page == "個股分析":
     st.markdown(f"## {code}　{name}"); st.caption(f"{row.get('市場','—')} ｜ {row.get('產業別','—')} ｜ {row.get('財報類型','—')}")
 
     if pd.notna(row.get("一週模型排名", np.nan)):
-        st.markdown("### 一週模型")
+        st.markdown("### 波段評分總覽")
         a,b,c,d=st.columns(4)
-        a.metric("主模型排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
-        b.metric("S2主模型分數",fmt(row.get("主模型分數"),1))
-        c.metric("波段爆發分數",fmt(row.get("波段爆發分數"),1))
+        a.metric("全市場 S2 排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
+        b.metric("S2 波段分數",fmt(row.get("主模型分數"),1))
+        c.metric("操作型波段條件",fmt(row.get("波段爆發分數"),1))
         d.metric("進場時機",fmt(row.get("進場時機分數"),1))
 
+        st.markdown(
+            f'<div class="ks-note"><b>{row.get("50%潛力判定","—")}</b>　｜　'
+            f'啟動階段：{row.get("啟動階段","—")}　｜　進場判定：{row.get("進場判定","—")}</div>',
+            unsafe_allow_html=True,
+        )
+
         s21,s22,s23,s24=st.columns(4)
-        s21.metric("Base PR",fmt(row.get("S2 Base PR"),0))
-        s22.metric("General PR",fmt(row.get("S2 General PR"),0))
-        s23.metric("Ignition PR",fmt(row.get("S2 Ignition PR"),0))
-        s24.metric("Second-Leg PR",fmt(row.get("S2 SecondLeg PR"),0))
-        st.caption(f"{row.get('50%潛力判定','—')} ｜ 啟動階段：{row.get('啟動階段','—')}")
+        s21.metric("歷史型態 Base",fmt(row.get("S2 Base PR"),0))
+        s22.metric("一般爆發 General",fmt(row.get("S2 General PR"),0))
+        s23.metric("啟動 Ignition",fmt(row.get("S2 Ignition PR"),0))
+        s24.metric("第二段 Second-Leg",fmt(row.get("S2 SecondLeg PR"),0))
 
-        x1,x2,x3,x4=st.columns(4)
-        x1.metric("歷史50%型態PR",fmt(row.get("50%歷史型態PR"),0))
-        x2.metric("相似型態命中率",fmt(row.get("50%歷史型態命中率"),2,"%"))
-        x3.metric("相似樣本平均最高漲幅",fmt(row.get("相似樣本40日最高報酬均值"),1,"%"))
-        x4.metric("突破強度",fmt(row.get("突破強度分數"),0))
-
-        y1,y2,y3,y4=st.columns(4)
-        y1.metric("持續動能",fmt(row.get("動能持續分數"),0))
-        y2.metric("籌碼動能",fmt(row.get("籌碼動能分數"),0))
-        y3.metric("活躍爆發",fmt(row.get("活躍爆發分數"),0))
-        y4.metric("波動爆發",fmt(row.get("波動爆發潛力"),0))
-
-        st.markdown(f"**進場判定：{row.get('進場判定','—')}**")
         c1,c2=st.columns(2)
         with c1:
-            st.info(f"起漲原因：{row.get('起漲原因','—')}")
+            st.info(f"模型看多理由：{row.get('起漲原因','—')}")
         with c2:
             risk_text=str(row.get("進場風險","—"))
             if risk_text=="無明顯風險訊號":
-                st.success(f"進場風險：{risk_text}")
+                st.success(f"主要風險：{risk_text}")
             else:
-                st.warning(f"進場風險：{risk_text}")
+                st.warning(f"主要風險：{risk_text}")
 
-        g1,g2,g3=st.columns(3)
-        g1.metric("台股環境",fmt(row.get("台股環境分數"),1))
-        g2.metric("全球環境",fmt(row.get("全球環境分數"),1))
-        g3.metric("產業海外順風",fmt(row.get("產業海外順風分數"),1))
-        st.caption("主模型目標：40 個交易日內的大波段／挑戰 +50%。現在直接用歷史資料標記『40日內曾漲50%』，把目前型態與這些歷史成功樣本做相似度比較；歷史50%型態PR是波段爆發分數的最大權重，再搭配突破、持續動能、籌碼、波動與活躍度。")
+        with st.expander("查看進階模型細節"):
+            x1,x2,x3,x4=st.columns(4)
+            x1.metric("歷史50%型態PR",fmt(row.get("50%歷史型態PR"),0))
+            x2.metric("相似型態命中率",fmt(row.get("50%歷史型態命中率"),2,"%"))
+            x3.metric("相似樣本40日平均最高漲幅",fmt(row.get("相似樣本40日最高報酬均值"),1,"%"))
+            x4.metric("突破強度",fmt(row.get("突破強度分數"),0))
+
+            y1,y2,y3,y4=st.columns(4)
+            y1.metric("持續動能",fmt(row.get("動能持續分數"),0))
+            y2.metric("籌碼動能",fmt(row.get("籌碼動能分數"),0))
+            y3.metric("活躍爆發",fmt(row.get("活躍爆發分數"),0))
+            y4.metric("波動爆發",fmt(row.get("波動爆發潛力"),0))
+
+            g1,g2,g3=st.columns(3)
+            g1.metric("台股環境",fmt(row.get("台股環境分數"),1))
+            g2.metric("全球環境",fmt(row.get("全球環境分數"),1))
+            g3.metric("產業海外順風",fmt(row.get("產業海外順風分數"),1))
+            st.caption("S2_E_BALANCED：Base 45% + General 25% + Ignition 15% + Second-Leg 15%。歷史相似型態命中率是歷史樣本統計，不是未來報酬機率。")
     else:
         st.info("這檔目前還沒有一週模型資料，請先跑一次 GitHub Actions。")
 
-    st.markdown("### AI 操作教練")
+    st.markdown("### 交易計畫")
     coach_hist = history_all[history_all["股票代號"].eq(code)].copy() if (not history_all.empty and "股票代號" in history_all.columns) else pd.DataFrame()
     plan = build_ai_trade_plan(coach_hist, row)
 
@@ -2695,3 +2786,7 @@ else:
         table(x[cols])
 
 st.sidebar.caption("每日把最新 V1～V5 Excel 放進 data 資料夾即可更新。")
+
+
+st.markdown("---")
+st.caption("KunStock 以量化模型整理公開市場資料，資料僅供研究與資訊參考，不構成投資建議、獲利保證或任何證券交易招攬。市場價格與資料來源可能延遲或修正，實際交易前請自行確認。")
