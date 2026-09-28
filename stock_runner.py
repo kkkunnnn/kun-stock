@@ -765,6 +765,7 @@ def apply_live_s2_balanced(out, history_df):
     if not wf_path.exists():
         print("⚠️ 找不到 walkforward_results.csv，今日保留舊主模型排名")
         result["正式模型版本"] = "LEGACY_FALLBACK"
+        result["S2狀態"] = "找不到walkforward_results.csv"
         return result
 
     try:
@@ -785,6 +786,7 @@ def apply_live_s2_balanced(out, history_df):
         if missing or len(train) < 3000:
             print(f"⚠️ S2歷史訓練資料不足/缺欄位 {sorted(missing)}，保留舊主模型")
             result["正式模型版本"] = "LEGACY_FALLBACK"
+            result["S2狀態"] = f"歷史訓練資料不足或缺欄位:{sorted(missing)}"
             return result
 
         live = _build_live_s2_test_frame(result, history_df)
@@ -803,7 +805,15 @@ def apply_live_s2_balanced(out, history_df):
             .rank(pct=True, method="average") * 100
         )
 
-        base = pd.to_numeric(result.get("50%歷史型態PR"), errors="coerce").fillna(50.0).reset_index(drop=True)
+        if "50%歷史型態PR" in result.columns:
+            base_src = result["50%歷史型態PR"]
+        elif "50%歷史型態PR_y" in result.columns:
+            base_src = result["50%歷史型態PR_y"]
+        elif "50%歷史型態PR_x" in result.columns:
+            base_src = result["50%歷史型態PR_x"]
+        else:
+            base_src = pd.Series(50.0, index=result.index)
+        base = pd.to_numeric(base_src, errors="coerce").fillna(50.0).reset_index(drop=True)
         gen = pd.to_numeric(live_scored["S2 General PR"], errors="coerce").fillna(50.0)
         ign = pd.to_numeric(live_scored["S2 Ignition PR"], errors="coerce").fillna(50.0)
         sec = pd.to_numeric(live_scored["S2 SecondLeg PR"], errors="coerce").fillna(50.0)
@@ -818,6 +828,7 @@ def apply_live_s2_balanced(out, history_df):
         result["S2主模型分數"] = s2_score.round(2)
         result["主模型分數"] = result["S2主模型分數"]
         result["正式模型版本"] = LIVE_S2_CONFIG
+        result["S2狀態"] = "正常"
 
         def s2_label(x):
             if pd.isna(x):
@@ -841,6 +852,7 @@ def apply_live_s2_balanced(out, history_df):
     except Exception as e:
         print(f"⚠️ Live S2 升級失敗，保留舊主模型：{str(e)[:180]}")
         result["正式模型版本"] = "LEGACY_FALLBACK"
+        result["S2狀態"] = f"例外:{str(e)[:160]}"
         return result
 
 
@@ -855,6 +867,23 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
 
     if pattern_scores is not None and not pattern_scores.empty:
         out = out.merge(pattern_scores, on="股票代號", how="left")
+
+    # Canonicalize duplicated historical-pattern columns.
+    # Older daily outputs may already contain these fields, so pandas creates _x/_y.
+    for base_col in [
+        "50%歷史型態命中率",
+        "50%歷史型態PR",
+        "相似樣本40日最高報酬均值",
+    ]:
+        if base_col not in out.columns:
+            preferred = f"{base_col}_y"
+            fallback = f"{base_col}_x"
+            if preferred in out.columns:
+                out[base_col] = pd.to_numeric(out[preferred], errors="coerce")
+            elif fallback in out.columns:
+                out[base_col] = pd.to_numeric(out[fallback], errors="coerce")
+        else:
+            out[base_col] = pd.to_numeric(out[base_col], errors="coerce")
 
     global_score = 50.0
     global_regime = "資料不足"
