@@ -975,6 +975,10 @@ def load_walkforward_validation():
         "disc_combo": DATA_DIR / "discovery_v1_primary_plus_discovery.csv",
         "disc_samples": DATA_DIR / "discovery_v1_samples.csv",
         "disc_selected": DATA_DIR / "discovery_v1_selected_config.csv",
+        "macro_candidates": DATA_DIR / "macro_v1_candidates.csv",
+        "macro_comparison": DATA_DIR / "macro_v1_comparison.csv",
+        "macro_features": DATA_DIR / "macro_v1_feature_diagnostics.csv",
+        "macro_selected": DATA_DIR / "macro_v1_selected_config.csv",
     }
     selection_data = {}
     for key, path in selection_files.items():
@@ -2021,6 +2025,59 @@ elif page == "專業驗證":
                     "Discovery 是『第二名單』而不是新的主排行榜。"
                     "只有在 OOS 能穩定提高漏網股救回率，而且 Precision 仍高於全池基準時，"
                     "才值得正式放到每日 App。"
+                )
+
+            macro_cmp = walkforward_selection_v2.get("macro_comparison", pd.DataFrame())
+            macro_sel = walkforward_selection_v2.get("macro_selected", pd.DataFrame())
+            macro_cand = walkforward_selection_v2.get("macro_candidates", pd.DataFrame())
+            macro_feat = walkforward_selection_v2.get("macro_features", pd.DataFrame())
+
+            st.markdown("### Global Macro Model 1.0 / 全球市場跨市場因子")
+            st.caption(
+                "這一層不只看美股漲跌，而是先估計每檔台股與 SOX、Nasdaq、S&P 500、"
+                "USD/TWD、油價、美債殖利率、VIX 的 60 日連動，再乘上當期全球市場變化，"
+                "因此能形成『個股化』的全球環境分數。"
+            )
+
+            if macro_cmp.empty:
+                st.info("Global Macro V1 尚未完成回測。執行一次 Full Historical Research Pipeline 即可一次產生全部結果。")
+            else:
+                macro_name = str(macro_sel.iloc[0].get("selected_config","—")) if not macro_sel.empty else "—"
+                st.markdown(f"#### 開發期選定 Global Macro 設定：{macro_name}")
+
+                oosm = macro_cmp[
+                    (macro_cmp["期間"].astype(str) == "OOS期")
+                    & (pd.to_numeric(macro_cmp["K"], errors="coerce") == 10)
+                ].copy()
+                if not oosm.empty:
+                    a,b = st.columns(2)
+                    s2row = oosm[oosm["模型"].astype(str) == "S2 leading"]
+                    mrow = oosm[oosm["模型"].astype(str) == "S2+GlobalMacro"]
+                    if not s2row.empty:
+                        v=s2row.iloc[0]
+                        a.metric("S2 OOS Top10", fmt(v.get("Precision"),2,"%"), f"Recall {fmt(v.get('Recall'),2,'%')}")
+                    if not mrow.empty:
+                        v=mrow.iloc[0]
+                        b.metric("S2 + Macro OOS Top10", fmt(v.get("Precision"),2,"%"), f"Recall {fmt(v.get('Recall'),2,'%')}")
+
+                st.markdown("#### S2 vs S2 + Global Macro")
+                zz=macro_cmp.copy()
+                for c in ["Precision","Recall","Lift"]:
+                    if c in zz.columns:
+                        zz[c]=pd.to_numeric(zz[c],errors="coerce").round(3)
+                table(zz,height=360)
+
+                if not macro_cand.empty:
+                    st.markdown("#### Macro 權重候選（只用開發期挑選）")
+                    table(macro_cand,height=260)
+
+                if not macro_feat.empty:
+                    st.markdown("#### 跨市場因子診斷")
+                    table(macro_feat,height=300)
+
+                st.warning(
+                    "Global Macro V1 目前仍是研究層。只有 OOS 顯示跨市場因子能穩定改善 Precision / Recall / Lift，"
+                    "才會正式接到每日排名。"
                 )
 
 
