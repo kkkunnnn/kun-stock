@@ -276,13 +276,13 @@ def sanitize_code(source: str) -> str:
     # 所有「取得上櫃行情(...)」呼叫都改走 safe_tpex_daily。
     # 先改函式定義名稱，避免後續全域替換把 helper 自己覆蓋掉。
     source = re.sub(
-        r'def\\s+取得上櫃行情\\s*\\(',
+        r'def\s+取得上櫃行情\s*\(',
         'def 取得上櫃行情_legacy(',
         source,
         count=1,
     )
     source = re.sub(
-        r'(?<!def )取得上櫃行情\\s*\\(',
+        r'(?<!def )取得上櫃行情\s*\(',
         'safe_tpex_daily(',
         source,
     )
