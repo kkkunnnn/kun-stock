@@ -9,10 +9,13 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from selection_model_v2 import add_selection_v2_components
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-MODEL_VERSION = "P50-1.0"
+MODEL_VERSION = "P50-LIVE-S2.0"
 MODEL_TARGET = "40交易日內最高報酬達+50%"
+LIVE_S2_CONFIG = "S2_E_BALANCED"
 NOTEBOOK_PATH = ROOT / "股市V1-V5.ipynb"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -687,6 +690,160 @@ def build_historical_50_pattern_scores(history_df):
     return out, stats
 
 
+def _build_live_s2_test_frame(out, history_df):
+    """Build current cross-sectional features aligned to the historical S2 research features."""
+    rows = []
+    hist_map = {}
+
+    if history_df is not None and not history_df.empty:
+        h = history_df.copy()
+        h["stock_id"] = h["stock_id"].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
+        h["date"] = pd.to_datetime(h["date"], errors="coerce")
+        h = h.sort_values(["stock_id", "date"])
+        hist_map = {code: g.sort_values("date").copy() for code, g in h.groupby("stock_id")}
+
+    for _, r in out.iterrows():
+        code = str(r.get("股票代號", "")).zfill(4)
+        g = hist_map.get(code)
+
+        prior60_runup = np.nan
+        dd20_high = np.nan
+        dd60_high = np.nan
+        if g is not None and len(g):
+            close = pd.to_numeric(g.get("close"), errors="coerce").dropna()
+            if len(close):
+                last = float(close.iloc[-1])
+                if len(close) >= 60:
+                    low60 = float(close.tail(60).min())
+                    high60 = float(close.tail(60).max())
+                    if low60 > 0:
+                        prior60_runup = (last / low60 - 1) * 100
+                    if high60 > 0:
+                        dd60_high = (last / high60 - 1) * 100
+                if len(close) >= 20:
+                    high20 = float(close.tail(20).max())
+                    if high20 > 0:
+                        dd20_high = (last / high20 - 1) * 100
+
+        rows.append({
+            "股票代號": code,
+            "atr_pct": _safe_num(r.get("ATR百分比")),
+            "vol20_ann": _safe_num(r.get("20日年化波動率")),
+            "ret60": _safe_num(r.get("60日報酬率")),
+            "ret20": _safe_num(r.get("20日報酬率")),
+            "ret5": _safe_num(r.get("5日報酬率")),
+            "rsi14": _safe_num(r.get("14日RSI")),
+            "ma20_bias": _safe_num(r.get("MA20乖離率")),
+            "vol_ratio": _safe_num(r.get("量比")),
+            "prior60_runup": prior60_runup,
+            "dd20_high": dd20_high,
+            "dd60_high": dd60_high,
+        })
+    return pd.DataFrame(rows)
+
+
+def apply_live_s2_balanced(out, history_df):
+    """
+    Promote the research-selected S2_E_BALANCED configuration to the daily live ranking.
+
+    Historical evidence model:
+      45% base historical +50 pattern percentile
+      25% General explosion evidence
+      15% Ignition evidence
+      15% Second-leg evidence
+
+    The supporting evidence bins are fit only on mature historical walk-forward rows
+    already stored in data/walkforward_results.csv.
+    """
+    if out is None or out.empty:
+        return out
+
+    result = out.copy()
+    result["舊主模型分數"] = pd.to_numeric(result.get("主模型分數"), errors="coerce")
+
+    wf_path = DATA_DIR / "walkforward_results.csv"
+    if not wf_path.exists():
+        print("⚠️ 找不到 walkforward_results.csv，今日保留舊主模型排名")
+        result["正式模型版本"] = "LEGACY_FALLBACK"
+        return result
+
+    try:
+        train = pd.read_csv(wf_path, dtype={"stock_id": str})
+        train["stock_id"] = train["stock_id"].astype(str).str.zfill(4)
+        train["date"] = pd.to_datetime(train.get("date"), errors="coerce")
+        train = train[pd.to_numeric(train.get("hit50"), errors="coerce").notna()].copy()
+
+        # Keep research/live liquidity definition aligned.
+        if "volume" in train.columns:
+            train = train[pd.to_numeric(train["volume"], errors="coerce") >= 1_000_000]
+
+        needed = {
+            "hit50","atr_pct","vol20_ann","ret60","ret20","ret5",
+            "rsi14","ma20_bias","vol_ratio","prior60_runup","dd20_high","dd60_high"
+        }
+        missing = needed - set(train.columns)
+        if missing or len(train) < 3000:
+            print(f"⚠️ S2歷史訓練資料不足/缺欄位 {sorted(missing)}，保留舊主模型")
+            result["正式模型版本"] = "LEGACY_FALLBACK"
+            return result
+
+        live = _build_live_s2_test_frame(result, history_df)
+        live_scored = add_selection_v2_components(train, live)
+
+        live_scored["S2 General PR"] = (
+            pd.to_numeric(live_scored["s2_general_raw"], errors="coerce")
+            .rank(pct=True, method="average") * 100
+        )
+        live_scored["S2 Ignition PR"] = (
+            pd.to_numeric(live_scored["s2_ignition_raw"], errors="coerce")
+            .rank(pct=True, method="average") * 100
+        )
+        live_scored["S2 SecondLeg PR"] = (
+            pd.to_numeric(live_scored["s2_second_raw"], errors="coerce")
+            .rank(pct=True, method="average") * 100
+        )
+
+        base = pd.to_numeric(result.get("50%歷史型態PR"), errors="coerce").fillna(50.0).reset_index(drop=True)
+        gen = pd.to_numeric(live_scored["S2 General PR"], errors="coerce").fillna(50.0)
+        ign = pd.to_numeric(live_scored["S2 Ignition PR"], errors="coerce").fillna(50.0)
+        sec = pd.to_numeric(live_scored["S2 SecondLeg PR"], errors="coerce").fillna(50.0)
+
+        s2_score = base * 0.45 + gen * 0.25 + ign * 0.15 + sec * 0.15
+
+        result = result.reset_index(drop=True)
+        result["S2 Base PR"] = base.round(2)
+        result["S2 General PR"] = gen.round(2)
+        result["S2 Ignition PR"] = ign.round(2)
+        result["S2 SecondLeg PR"] = sec.round(2)
+        result["S2主模型分數"] = s2_score.round(2)
+        result["主模型分數"] = result["S2主模型分數"]
+        result["正式模型版本"] = LIVE_S2_CONFIG
+
+        def s2_label(x):
+            if pd.isna(x):
+                return "⚪ 資料不足"
+            if x >= 85:
+                return "🔥 S2高波段爆發潛力"
+            if x >= 70:
+                return "🟢 S2中高爆發潛力"
+            if x >= 55:
+                return "🟡 S2中等爆發潛力"
+            return "⚪ S2爆發潛力不足"
+
+        result["50%潛力判定"] = result["S2主模型分數"].apply(s2_label)
+
+        print(
+            f"✅ Live Selection Upgrade：{LIVE_S2_CONFIG} 已接管主排名；"
+            f"歷史訓練樣本 {len(train):,}"
+        )
+        return result
+
+    except Exception as e:
+        print(f"⚠️ Live S2 升級失敗，保留舊主模型：{str(e)[:180]}")
+        result["正式模型版本"] = "LEGACY_FALLBACK"
+        return result
+
+
 def build_one_week_model(result_df, history_df, inst_df, global_df, global_summary, domestic_summary, pattern_scores=None):
     if result_df is None or result_df.empty:
         return pd.DataFrame()
@@ -1209,6 +1366,11 @@ def build_one_week_model(result_df, history_df, inst_df, global_df, global_summa
     weekly = pd.DataFrame(rows)
     out = out.merge(weekly, on="股票代號", how="left")
 
+    # 正式 Live Selection Upgrade：
+    # 研究期勝出的 S2_E_BALANCED 直接接管每日主排名；
+    # 既有進場時機/風險/市場環境欄位仍保留作操作層。
+    out = apply_live_s2_balanced(out, history_df)
+
     out["起漲潛力排名"] = (
         pd.to_numeric(out["一週起漲分數"], errors="coerce")
         .rank(ascending=False, method="min")
@@ -1357,6 +1519,9 @@ def main() -> None:
         metadata = pd.DataFrame([{
             "模型版本": MODEL_VERSION,
             "模型目標": MODEL_TARGET,
+            "正式選股模型": LIVE_S2_CONFIG,
+            "正式選股權重": "Base45% + General25% + Ignition15% + SecondLeg15%",
+            "歷史流動性定義": "volume >= 1,000,000 shares（1,000張）",
             "資料基準日": latest_trade_date.strftime("%Y-%m-%d"),
             "歷史視窗日數": 420,
             "歷史樣本數": pattern_stats.get("歷史樣本數", 0),
@@ -1446,7 +1611,9 @@ def main() -> None:
             "一週模型排名", "主模型排名", "起漲潛力排名", "波段爆發排名",
             "一週起漲分數", "波段爆發分數", "50%歷史型態命中率", "50%歷史型態PR",
             "相似樣本40日最高報酬均值", "突破強度分數", "動能持續分數", "活躍爆發分數",
-            "波動爆發潛力", "主模型分數", "50%潛力判定", "進場時機分數",
+            "波動爆發潛力", "舊主模型分數", "S2主模型分數",
+            "S2 Base PR", "S2 General PR", "S2 Ignition PR", "S2 SecondLeg PR",
+            "正式模型版本", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",
             "風險扣分", "啟動階段", "進場判定",
             "全球環境分數", "台股環境分數", "產業海外順風分數",
