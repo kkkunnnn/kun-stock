@@ -951,12 +951,31 @@ def load_walkforward_validation():
     except Exception:
         regime_gate = pd.DataFrame()
 
+    selection_files = {
+        "s2_pr": DATA_DIR / "selection_v2_precision_recall.csv",
+        "s2_diag": DATA_DIR / "selection_v2_feature_diagnostics.csv",
+        "s2_fn": DATA_DIR / "selection_v2_false_negatives.csv",
+        "s2_runup": DATA_DIR / "selection_v2_runup_buckets.csv",
+        "s2_ignition": DATA_DIR / "selection_v2_ignition_timing.csv",
+        "s2_candidates": DATA_DIR / "selection_v2_model_candidates.csv",
+        "s2_comparison": DATA_DIR / "selection_v2_model_comparison.csv",
+        "s2_branches": DATA_DIR / "selection_v2_branch_summary.csv",
+        "s2_selected": DATA_DIR / "selection_v2_selected_config.csv",
+    }
+    selection_data = {}
+    for key, path in selection_files.items():
+        try:
+            selection_data[key] = pd.read_csv(path) if path.exists() else pd.DataFrame()
+        except Exception:
+            selection_data[key] = pd.DataFrame()
+
     return (
         summary, metadata, results, exit_summary, exit_trades,
         optimizer, optimizer_shortlist, optimizer_yearly,
         robustness_stop_hold, robustness_trailing,
         robustness_cost, robustness_scorecard,
-        regime_signal, regime_exit, regime_gate
+        regime_signal, regime_exit, regime_gate,
+        selection_data
     )
 
 
@@ -1094,6 +1113,7 @@ global_market_detail, global_market_summary = load_global_market()
     walkforward_regime_signal,
     walkforward_regime_exit,
     walkforward_regime_gate,
+    walkforward_selection_v2,
 ) = load_walkforward_validation()
 if not sheets:
     st.warning("找不到資料，請從側邊欄上傳 V1～V5 Excel。")
@@ -1739,6 +1759,84 @@ elif page == "專業驗證":
             "看到一個參數點特別高，不代表它可靠。真正值得保留的是："
             "附近參數也有效、成本提高後仍有效、OOS 不崩壞、且多個年份 PF 仍大於 1。"
         )
+
+
+        st.markdown("### Selection Model 2.0 / 找出真正會噴的股票")
+        st.caption(
+            "研究目標：對完整流動性股票池逐檔預測未來 40 個交易日是否可能出現 +50%，"
+            "同時兼顧 Precision、Recall、爆發前啟動與第二段再加速。S2 設定只用 2025 年前開發期挑選，"
+            "2025 年起 OOS 只做驗證。"
+        )
+
+        s2_cmp = walkforward_selection_v2.get("s2_comparison", pd.DataFrame())
+        s2_sel = walkforward_selection_v2.get("s2_selected", pd.DataFrame())
+        s2_cand = walkforward_selection_v2.get("s2_candidates", pd.DataFrame())
+        s2_fn = walkforward_selection_v2.get("s2_fn", pd.DataFrame())
+        s2_runup = walkforward_selection_v2.get("s2_runup", pd.DataFrame())
+        s2_ign = walkforward_selection_v2.get("s2_ignition", pd.DataFrame())
+        s2_diag = walkforward_selection_v2.get("s2_diag", pd.DataFrame())
+
+        if s2_cmp.empty:
+            st.info("Selection Model 2.0 候選引擎尚未完成回測。執行一次 Historical Walk-Forward Validation 即可一次產生全部結果。")
+        else:
+            selected_name = (
+                str(s2_sel.iloc[0].get("selected_config","—"))
+                if not s2_sel.empty else "—"
+            )
+            st.markdown(f"#### 開發期選定候選設定：{selected_name}")
+
+            oos = s2_cmp[
+                (s2_cmp["期間"].astype(str) == "OOS期")
+                & (pd.to_numeric(s2_cmp["K"], errors="coerce") == 10)
+            ].copy()
+            if not oos.empty:
+                s1 = oos[oos["模型"].astype(str) == "S1原模型"]
+                s2m = oos[oos["模型"].astype(str) == "S2候選模型"]
+                a,b,c,d = st.columns(4)
+                if not s1.empty and not s2m.empty:
+                    a.metric("S1 OOS Top10 Precision", fmt(s1.iloc[0].get("Precision"),2,"%"))
+                    b.metric("S2 OOS Top10 Precision", fmt(s2m.iloc[0].get("Precision"),2,"%"))
+                    c.metric("S1 OOS Top10 Recall", fmt(s1.iloc[0].get("Recall"),2,"%"))
+                    d.metric("S2 OOS Top10 Recall", fmt(s2m.iloc[0].get("Recall"),2,"%"))
+
+            st.markdown("#### S1 vs S2：Precision / Recall / Lift")
+            show_cmp = s2_cmp.copy()
+            for c in ["Precision","Recall","Lift"]:
+                if c in show_cmp.columns:
+                    show_cmp[c] = pd.to_numeric(show_cmp[c], errors="coerce").round(3)
+            table(show_cmp, height=390)
+
+            if not s2_cand.empty:
+                st.markdown("#### 候選模型設定（只看開發期排名）")
+                cand = s2_cand.copy()
+                for c in cand.columns:
+                    if c not in ["config"] and c in cand.columns:
+                        try:
+                            cand[c] = pd.to_numeric(cand[c], errors="ignore")
+                        except Exception:
+                            pass
+                table(cand, height=300)
+
+            if not s2_fn.empty:
+                st.markdown("#### +50% 成功股：目前抓到與漏掉的型態")
+                table(s2_fn, height=260)
+
+            if not s2_runup.empty:
+                st.markdown("#### 第一段 / 第二段：前 60 日已漲幅")
+                table(s2_runup, height=260)
+
+            if not s2_ign.empty:
+                st.markdown("#### Ignition Timing：距離 +50% 還有多久")
+                table(s2_ign, height=230)
+
+            if not s2_diag.empty:
+                st.markdown("#### 核心特徵區分力")
+                table(s2_diag, height=330)
+
+            st.warning(
+                "S2 現階段仍是候選研究模型，不會因為單次 OOS 表現較高就自動取代正式排行榜。"
+                "只有在 Precision、Recall、Lift、不同年份與市場環境都保持穩定後，才會升級成正式排名引擎。"
+            )
 
 
         st.markdown("### Regime Filter / 市場環境驗證")
