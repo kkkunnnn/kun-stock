@@ -1147,7 +1147,7 @@ if not weekly_model_all.empty:
             "相似樣本40日最高報酬均值","突破強度分數","動能持續分數","活躍爆發分數",
             "波動爆發潛力","舊主模型分數","S2主模型分數",
             "S2 Base PR","S2 General PR","S2 Ignition PR","S2 SecondLeg PR",
-            "正式模型版本","主模型分數","50%潛力判定","進場時機分數",
+            "正式模型版本","S2狀態","主模型分數","50%潛力判定","進場時機分數",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
             "風險扣分","啟動階段","進場判定","起漲原因","進場風險",
             "全球環境分數","台股環境分數","產業海外順風分數",
@@ -1221,6 +1221,17 @@ if page == "今日 Top 10":
 
         st.markdown("## 1～2 個月 50% 波段目標 Top 10")
         st.caption("正式主排名已升級為 S2_E_BALANCED：歷史50%型態 45% + General 25% + Ignition 15% + Second-Leg 15%。主排名目標是找出未來 1～2 個月具大波段爆發潛力、且仍有操作意義的個股；進場時機與市場環境仍作操作層。50% 是篩選與回測目標，不是保證報酬。")
+
+        if "正式模型版本" in rank.columns:
+            live_versions = rank["正式模型版本"].dropna().astype(str)
+            if not live_versions.empty and live_versions.eq("LEGACY_FALLBACK").any():
+                status_text = ""
+                if "S2狀態" in rank.columns:
+                    vals = rank["S2狀態"].dropna().astype(str)
+                    status_text = vals.iloc[0] if not vals.empty else ""
+                st.error(f"⚠️ 今日 S2 Live 尚未正式接管排名：{status_text or '目前使用舊模型 fallback'}")
+            elif not live_versions.empty:
+                st.success(f"✅ 今日正式排名模型：{live_versions.iloc[0]}")
 
         # 首頁 Top 10 只放「仍具操作意義」的標的。
         # 暫不考慮 / 短線過熱 不應佔用 Top10 名額。
