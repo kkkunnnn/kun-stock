@@ -2,6 +2,12 @@ name: Daily Taiwan Stock Screener
 
 on:
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: "休市日也強制執行（只建議測試用）"
+        required: false
+        default: false
+        type: boolean
   schedule:
     # 台灣時間週一到週五 21:00（UTC 13:00）
     - cron: "0 13 * * 1-5"
@@ -31,13 +37,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check Taiwan market day
+        id: market_day
+        env:
+          TZ: Asia/Taipei
+        run: |
+          FORCE_ARG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_run }}" = "true" ]; then
+            FORCE_ARG="--force"
+          fi
+
+          OUTPUT="$(python market_open_check.py $FORCE_ARG)"
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -q "market_open=true"; then
+            echo "market_open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "market_open=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip closed market
+        if: steps.market_day.outputs.market_open != 'true'
+        run: |
+          echo "今日台股休市，略過選股、模型計算與資料寫入。"
+
       - name: Run V1-V5 screener
+        if: steps.market_day.outputs.market_open == 'true'
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
           TZ: Asia/Taipei
         run: python stock_runner.py
 
       - name: Commit latest results
+        if: steps.market_day.outputs.market_open == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
