@@ -970,6 +970,11 @@ def load_walkforward_validation():
         "ign2_recovery": DATA_DIR / "ignition_v2_false_negative_recovery.csv",
         "ign2_features": DATA_DIR / "ignition_v2_feature_diagnostics.csv",
         "ign2_selected": DATA_DIR / "ignition_v2_selected_config.csv",
+        "disc_candidates": DATA_DIR / "discovery_v1_candidates.csv",
+        "disc_eval": DATA_DIR / "discovery_v1_evaluation.csv",
+        "disc_combo": DATA_DIR / "discovery_v1_primary_plus_discovery.csv",
+        "disc_samples": DATA_DIR / "discovery_v1_samples.csv",
+        "disc_selected": DATA_DIR / "discovery_v1_selected_config.csv",
     }
     selection_data = {}
     for key, path in selection_files.items():
@@ -1958,6 +1963,64 @@ elif page == "專業驗證":
                 st.warning(
                     "Ignition 2.0 目前仍是研究層。重點不是只看 Top10 是否變漂亮，"
                     "而是它能不能在 OOS 真正救回原本 Top50 外、之後卻 +50% 的股票，同時不明顯破壞 Precision。"
+                )
+
+            disc_eval = walkforward_selection_v2.get("disc_eval", pd.DataFrame())
+            disc_sel = walkforward_selection_v2.get("disc_selected", pd.DataFrame())
+            disc_cand = walkforward_selection_v2.get("disc_candidates", pd.DataFrame())
+            disc_combo = walkforward_selection_v2.get("disc_combo", pd.DataFrame())
+            disc_samples = walkforward_selection_v2.get("disc_samples", pd.DataFrame())
+
+            st.markdown("### Discovery Model 1.0 / 潛伏爆發第二名單")
+            st.caption(
+                "主榜仍由 S2_D_SECOND 負責。Discovery 只在 S2 Top50 外搜尋高 Ignition 候選，"
+                "目標是找出原本主排名漏掉、但之後可能出現大波段的股票。"
+            )
+
+            if disc_eval.empty:
+                st.info("Discovery V1 尚未完成回測。重新執行一次 Historical Walk-Forward Validation 即可產生。")
+            else:
+                disc_name = str(disc_sel.iloc[0].get("selected_config","—")) if not disc_sel.empty else "—"
+                st.markdown(f"#### 開發期選定 Discovery 設定：{disc_name}")
+
+                oosd = disc_eval[
+                    (disc_eval["期間"].astype(str) == "OOS期")
+                    & (pd.to_numeric(disc_eval["K"], errors="coerce") == 10)
+                ].copy()
+                if not oosd.empty:
+                    v=oosd.iloc[0]
+                    a,b,c = st.columns(3)
+                    a.metric("Discovery OOS Top10 Precision", fmt(v.get("Precision"),2,"%"))
+                    b.metric("全體 +50 Recall", fmt(v.get("Recall_all50"),2,"%"))
+                    c.metric("S2 Top50 漏網救回率", fmt(v.get("MissRecall"),2,"%"))
+
+                st.markdown("#### Discovery V1 各深度表現")
+                z=disc_eval.copy()
+                for c in ["Precision","Recall_all50","MissRecall"]:
+                    if c in z.columns:
+                        z[c]=pd.to_numeric(z[c],errors="coerce").round(3)
+                table(z,height=350)
+
+                if not disc_combo.empty:
+                    st.markdown("#### 主榜 + 第二名單：同樣名單數量比較")
+                    z2=disc_combo.copy()
+                    for c in ["Precision","Recall"]:
+                        if c in z2.columns:
+                            z2[c]=pd.to_numeric(z2[c],errors="coerce").round(3)
+                    table(z2,height=280)
+
+                if not disc_cand.empty:
+                    st.markdown("#### Discovery 候選設定（只用開發期挑選）")
+                    table(disc_cand,height=300)
+
+                if not disc_samples.empty:
+                    st.markdown("#### Discovery Top10 成功股 vs 未成功股")
+                    table(disc_samples,height=260)
+
+                st.warning(
+                    "Discovery 是『第二名單』而不是新的主排行榜。"
+                    "只有在 OOS 能穩定提高漏網股救回率，而且 Precision 仍高於全池基準時，"
+                    "才值得正式放到每日 App。"
                 )
 
 
