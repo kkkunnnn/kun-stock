@@ -40,6 +40,14 @@ from selection_model_v21 import (
     compare_s21,
     branch_source_attribution,
 )
+from ignition_model_v2 import (
+    add_ignition_v2_components,
+    add_ignition_v2_rankings,
+    select_ignition_v2_fusion,
+    compare_ignition_v2,
+    false_negative_recovery,
+    feature_diagnostics as ignition_v2_feature_diagnostics,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -186,18 +194,49 @@ def compute_features(g: pd.DataFrame) -> pd.DataFrame:
     g["vol_ratio"] = v / v.rolling(20, min_periods=20).mean().replace(0, np.nan)
 
     ret1 = c.pct_change()
+    vol5_ann = ret1.rolling(5, min_periods=5).std() * np.sqrt(252) * 100
     g["vol20_ann"] = ret1.rolling(20, min_periods=20).std() * np.sqrt(252) * 100
+    g["vol_accel_5_20"] = vol5_ann / g["vol20_ann"].replace(0, np.nan)
+
+    vol_ma5 = v.rolling(5, min_periods=5).mean()
+    vol_ma20 = v.rolling(20, min_periods=20).mean()
+    g["volume_ma5_vs20"] = vol_ma5 / vol_ma20.replace(0, np.nan)
+    g["volume_1_vs5"] = v / vol_ma5.replace(0, np.nan)
+
+    ma5 = c.rolling(5, min_periods=5).mean()
+    g["ma5_slope5"] = (ma5 / ma5.shift(5) - 1) * 100
+    g["ma20_slope5"] = (ma20 / ma20.shift(5) - 1) * 100
+    g["rsi_delta5"] = g["rsi14"] - g["rsi14"].shift(5)
+
+    prev20_high = c.shift(1).rolling(20, min_periods=20).max()
+    g["dist_prev20_high"] = (c / prev20_high - 1) * 100
+
+    high10 = h.rolling(10, min_periods=10).max()
+    low10 = l.rolling(10, min_periods=10).min()
+    high40 = h.rolling(40, min_periods=40).max()
+    low40 = l.rolling(40, min_periods=40).min()
+    range10 = (high10 / low10.replace(0, np.nan) - 1) * 100
+    range40 = (high40 / low40.replace(0, np.nan) - 1) * 100
+    g["range_compression_10_40"] = range10 / range40.replace(0, np.nan)
+
+    std20 = c.rolling(20, min_periods=20).std()
+    g["bb_width20"] = (4 * std20 / ma20.replace(0, np.nan)) * 100
+    g["bb_width_delta5"] = g["bb_width20"] - g["bb_width20"].shift(5)
 
     prev = c.shift(1)
     tr = pd.concat([(h-l), (h-prev).abs(), (l-prev).abs()], axis=1).max(axis=1)
     atr14 = tr.rolling(14, min_periods=14).mean()
+    atr5 = tr.rolling(5, min_periods=5).mean()
+    atr20 = tr.rolling(20, min_periods=20).mean()
     g["atr_pct"] = atr14 / c.replace(0, np.nan) * 100
+    g["atr_accel_5_20"] = atr5 / atr20.replace(0, np.nan)
 
     ema12 = c.ewm(span=12, adjust=False).mean()
     ema26 = c.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
     g["macd_hist"] = macd - signal
+    g["macd_hist_delta5"] = g["macd_hist"] - g["macd_hist"].shift(5)
 
     n = len(g)
     future_mfe = np.full(n, np.nan)
@@ -273,6 +312,7 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
         return pd.DataFrame()
 
     test = add_selection_v2_components(train, test)
+    test = add_ignition_v2_components(train, test)
 
     means = train[FEATURES].mean()
     stds = train[FEATURES].std().replace(0, 1).fillna(1)
@@ -313,6 +353,22 @@ def score_date(dataset: pd.DataFrame, test_date: pd.Timestamp, k: int = 250) -> 
             "s2_general_raw": r.get("s2_general_raw"),
             "s2_ignition_raw": r.get("s2_ignition_raw"),
             "s2_second_raw": r.get("s2_second_raw"),
+            "ignition_v2_raw": r.get("ignition_v2_raw"),
+            "ignition_v2_fast50_raw": r.get("ignition_v2_fast50_raw"),
+            "ignition_v2_fast30_raw": r.get("ignition_v2_fast30_raw"),
+            "ignition_v2_gate": r.get("ignition_v2_gate"),
+            "atr_accel_5_20": r.get("atr_accel_5_20"),
+            "vol_accel_5_20": r.get("vol_accel_5_20"),
+            "volume_ma5_vs20": r.get("volume_ma5_vs20"),
+            "volume_1_vs5": r.get("volume_1_vs5"),
+            "range_compression_10_40": r.get("range_compression_10_40"),
+            "bb_width20": r.get("bb_width20"),
+            "bb_width_delta5": r.get("bb_width_delta5"),
+            "ma5_slope5": r.get("ma5_slope5"),
+            "ma20_slope5": r.get("ma20_slope5"),
+            "rsi_delta5": r.get("rsi_delta5"),
+            "macd_hist_delta5": r.get("macd_hist_delta5"),
+            "dist_prev20_high": r.get("dist_prev20_high"),
         })
 
     out = pd.DataFrame(out_rows)
@@ -609,6 +665,12 @@ def main():
     s21_comparison = compare_s21(res, s21_selected, s2_selected=s2_selected)
     s21_attribution = branch_source_attribution(res, s21_selected)
 
+    res = add_ignition_v2_rankings(res, s2_selected=s2_selected)
+    ignition_v2_selected, ignition_v2_candidates = select_ignition_v2_fusion(res)
+    ignition_v2_comparison = compare_ignition_v2(res, ignition_v2_selected, s2_selected=s2_selected)
+    ignition_v2_recovery = false_negative_recovery(res, ignition_v2_selected)
+    ignition_v2_features = ignition_v2_feature_diagnostics(res)
+
     summary = summarize(res)
 
     exit_trades = run_exit_strategy_backtest(res, prices)
@@ -673,6 +735,17 @@ def main():
         "target": "40交易日內最高漲幅>=50%",
         "ensemble": "General / Ignition / SecondLeg 獨立排名後輪替合併，不做固定權重平均",
     }]).to_csv(DATA_DIR / "selection_v21_selected_config.csv", index=False, encoding="utf-8-sig")
+
+    ignition_v2_candidates.to_csv(DATA_DIR / "ignition_v2_candidates.csv", index=False, encoding="utf-8-sig")
+    ignition_v2_comparison.to_csv(DATA_DIR / "ignition_v2_comparison.csv", index=False, encoding="utf-8-sig")
+    ignition_v2_recovery.to_csv(DATA_DIR / "ignition_v2_false_negative_recovery.csv", index=False, encoding="utf-8-sig")
+    ignition_v2_features.to_csv(DATA_DIR / "ignition_v2_feature_diagnostics.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([{
+        "selected_config": ignition_v2_selected,
+        "selection_rule": "只用2025前開發期挑Ignition融合權重；2025起OOS只驗證",
+        "target": "+50%於30交易日內 / +30%於20交易日內的快速爆發",
+        "feature_count": 17,
+    }]).to_csv(DATA_DIR / "ignition_v2_selected_config.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
@@ -728,6 +801,11 @@ def main():
         "Selection V2.1方法": "General / Ignition / SecondLeg 獨立排名後輪替合併，不做固定權重平均",
         "Selection V2.1挑選原則": "只用2025前開發期挑分支輪替；2025起OOS只驗證不參與挑選",
         "Selection V2.1選定設定": s21_selected,
+        "Ignition V2版本": "IGN-2.0",
+        "Ignition V2目標": "+50%於30交易日內 / +30%於20交易日內的快速爆發",
+        "Ignition V2特徵": "波動加速度/量能加速度/區間壓縮/BB寬度變化/均線斜率/RSI與MACD加速度/前高距離",
+        "Ignition V2挑選原則": "只用2025前開發期挑融合權重；2025起OOS只驗證",
+        "Ignition V2選定設定": ignition_v2_selected,
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -766,6 +844,15 @@ def main():
     print(s21_comparison.to_string(index=False))
     print("\n✅ S2.1 branch attribution")
     print(s21_attribution.to_string(index=False))
+    print("\n✅ Ignition V2 candidates")
+    print(ignition_v2_candidates.to_string(index=False))
+    print(f"\n✅ Selected Ignition V2 fusion: {ignition_v2_selected}")
+    print("\n✅ Ignition V2 comparison")
+    print(ignition_v2_comparison.to_string(index=False))
+    print("\n✅ Ignition V2 false-negative recovery")
+    print(ignition_v2_recovery.to_string(index=False))
+    print("\n✅ Ignition V2 feature diagnostics")
+    print(ignition_v2_features.to_string(index=False))
 
 
 if __name__ == "__main__":
