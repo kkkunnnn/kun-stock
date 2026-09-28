@@ -34,6 +34,12 @@ from selection_model_v2 import (
     compare_selected_vs_baseline,
     branch_capture_summary,
 )
+from selection_model_v21 import (
+    add_s21_rankings,
+    select_s21_on_development,
+    compare_s21,
+    branch_source_attribution,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -597,6 +603,12 @@ def main():
     s2_selected, s2_candidates = select_config_on_development(res)
     s2_comparison = compare_selected_vs_baseline(res, s2_selected)
     s2_branches = branch_capture_summary(res, s2_selected)
+
+    res = add_s21_rankings(res)
+    s21_selected, s21_candidates = select_s21_on_development(res)
+    s21_comparison = compare_s21(res, s21_selected, s2_selected=s2_selected)
+    s21_attribution = branch_source_attribution(res, s21_selected)
+
     summary = summarize(res)
 
     exit_trades = run_exit_strategy_backtest(res, prices)
@@ -651,6 +663,16 @@ def main():
         "target": "40交易日內最高漲幅>=50%",
         "branches": "General + Ignition + SecondLeg",
     }]).to_csv(DATA_DIR / "selection_v2_selected_config.csv", index=False, encoding="utf-8-sig")
+
+    s21_candidates.to_csv(DATA_DIR / "selection_v21_model_candidates.csv", index=False, encoding="utf-8-sig")
+    s21_comparison.to_csv(DATA_DIR / "selection_v21_model_comparison.csv", index=False, encoding="utf-8-sig")
+    s21_attribution.to_csv(DATA_DIR / "selection_v21_branch_attribution.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([{
+        "selected_config": s21_selected,
+        "selection_rule": "只用2025前開發期挑分支輪替；2025起OOS只驗證不參與選擇",
+        "target": "40交易日內最高漲幅>=50%",
+        "ensemble": "General / Ignition / SecondLeg 獨立排名後輪替合併，不做固定權重平均",
+    }]).to_csv(DATA_DIR / "selection_v21_selected_config.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
@@ -702,6 +724,10 @@ def main():
         "Selection V2分支": "General + Ignition + SecondLeg",
         "Selection V2挑選原則": "只用2025前開發期挑設定；2025起OOS只驗證不參與挑選",
         "Selection V2選定設定": s2_selected,
+        "Selection V2.1版本": "S2.1-BRANCH-1.0",
+        "Selection V2.1方法": "General / Ignition / SecondLeg 獨立排名後輪替合併，不做固定權重平均",
+        "Selection V2.1挑選原則": "只用2025前開發期挑分支輪替；2025起OOS只驗證不參與挑選",
+        "Selection V2.1選定設定": s21_selected,
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -733,6 +759,13 @@ def main():
     print(s2_comparison.to_string(index=False))
     print("\n✅ S2 branch capture")
     print(s2_branches.to_string(index=False))
+    print("\n✅ Selection V2.1 candidate branch ensembles")
+    print(s21_candidates.to_string(index=False))
+    print(f"\n✅ Selected S2.1 config: {s21_selected}")
+    print("\n✅ S1 vs S2 vs S2.1")
+    print(s21_comparison.to_string(index=False))
+    print("\n✅ S2.1 branch attribution")
+    print(s21_attribution.to_string(index=False))
 
 
 if __name__ == "__main__":
