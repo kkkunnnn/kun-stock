@@ -965,6 +965,11 @@ def load_walkforward_validation():
         "s21_comparison": DATA_DIR / "selection_v21_model_comparison.csv",
         "s21_attribution": DATA_DIR / "selection_v21_branch_attribution.csv",
         "s21_selected": DATA_DIR / "selection_v21_selected_config.csv",
+        "ign2_candidates": DATA_DIR / "ignition_v2_candidates.csv",
+        "ign2_comparison": DATA_DIR / "ignition_v2_comparison.csv",
+        "ign2_recovery": DATA_DIR / "ignition_v2_false_negative_recovery.csv",
+        "ign2_features": DATA_DIR / "ignition_v2_feature_diagnostics.csv",
+        "ign2_selected": DATA_DIR / "ignition_v2_selected_config.csv",
     }
     selection_data = {}
     for key, path in selection_files.items():
@@ -1891,6 +1896,69 @@ elif page == "專業驗證":
                 "S2 / S2.1 現階段仍是候選研究模型，不會因為單次 OOS 表現較高就自動取代正式排行榜。"
                 "只有在 Precision、Recall、Lift、不同年份與市場環境都保持穩定後，才會升級成正式排名引擎。"
             )
+
+            ign2_cmp = walkforward_selection_v2.get("ign2_comparison", pd.DataFrame())
+            ign2_sel = walkforward_selection_v2.get("ign2_selected", pd.DataFrame())
+            ign2_cand = walkforward_selection_v2.get("ign2_candidates", pd.DataFrame())
+            ign2_rec = walkforward_selection_v2.get("ign2_recovery", pd.DataFrame())
+            ign2_feat = walkforward_selection_v2.get("ign2_features", pd.DataFrame())
+
+            st.markdown("### Ignition Model 2.0 / 爆發前加速度")
+            st.caption(
+                "專門研究原本容易漏掉、尚未明顯上漲的 +50% 股票。"
+                "新增波動加速度、量能加速度、區間壓縮、布林帶寬度變化、均線斜率、RSI/MACD 加速度與前高距離；"
+                "訓練目標偏向 +50% 於 30 日內或 +30% 於 20 日內的快速爆發。"
+            )
+
+            if ign2_cmp.empty:
+                st.info("Ignition 2.0 尚未完成回測。重新執行一次 Historical Walk-Forward Validation 即可產生。")
+            else:
+                ign_name = str(ign2_sel.iloc[0].get("selected_config","—")) if not ign2_sel.empty else "—"
+                st.markdown(f"#### 開發期選定 Ignition 融合設定：{ign_name}")
+
+                oos_ign = ign2_cmp[
+                    (ign2_cmp["期間"].astype(str) == "OOS期")
+                    & (pd.to_numeric(ign2_cmp["K"], errors="coerce") == 10)
+                ].copy()
+                if not oos_ign.empty:
+                    cols = st.columns(3)
+                    for i,(label,key) in enumerate([
+                        ("S1原模型","S1原模型"),
+                        ("S2 leading","S2 leading"),
+                        ("S2+Ignition2","S2+Ignition2"),
+                    ]):
+                        row = oos_ign[oos_ign["模型"].astype(str) == key]
+                        if not row.empty:
+                            v=row.iloc[0]
+                            cols[i].metric(
+                                f"{label} OOS Top10",
+                                fmt(v.get("Precision"),2,"%"),
+                                f"Recall {fmt(v.get('Recall'),2,'%')}"
+                            )
+
+                st.markdown("#### S1 vs S2 vs Ignition 2.0")
+                z=ign2_cmp.copy()
+                for c in ["Precision","Recall","Lift"]:
+                    if c in z.columns:
+                        z[c]=pd.to_numeric(z[c],errors="coerce").round(3)
+                table(z,height=430)
+
+                if not ign2_rec.empty:
+                    st.markdown("#### False Negative 專項：原本 Top50 外的 +50% 股票救回多少")
+                    table(ign2_rec,height=280)
+
+                if not ign2_cand.empty:
+                    st.markdown("#### Ignition 融合候選（只用開發期挑選）")
+                    table(ign2_cand,height=260)
+
+                if not ign2_feat.empty:
+                    st.markdown("#### 爆發前特徵診斷")
+                    table(ign2_feat,height=360)
+
+                st.warning(
+                    "Ignition 2.0 目前仍是研究層。重點不是只看 Top10 是否變漂亮，"
+                    "而是它能不能在 OOS 真正救回原本 Top50 外、之後卻 +50% 的股票，同時不明顯破壞 Precision。"
+                )
 
 
         st.markdown("### Regime Filter / 市場環境驗證")
