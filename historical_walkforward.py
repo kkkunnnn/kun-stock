@@ -48,6 +48,13 @@ from ignition_model_v2 import (
     false_negative_recovery,
     feature_diagnostics as ignition_v2_feature_diagnostics,
 )
+from discovery_model_v1 import (
+    add_discovery_rankings,
+    select_discovery_on_development,
+    evaluate_discovery,
+    compare_primary_plus_discovery,
+    discovery_stock_samples,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -671,6 +678,12 @@ def main():
     ignition_v2_recovery = false_negative_recovery(res, ignition_v2_selected)
     ignition_v2_features = ignition_v2_feature_diagnostics(res)
 
+    res = add_discovery_rankings(res, s2_selected=s2_selected)
+    discovery_selected, discovery_candidates = select_discovery_on_development(res, s2_selected=s2_selected)
+    discovery_eval = evaluate_discovery(res, discovery_selected, s2_selected=s2_selected)
+    discovery_combo = compare_primary_plus_discovery(res, discovery_selected, s2_selected=s2_selected)
+    discovery_samples = discovery_stock_samples(res, discovery_selected, s2_selected=s2_selected)
+
     summary = summarize(res)
 
     exit_trades = run_exit_strategy_backtest(res, prices)
@@ -746,6 +759,17 @@ def main():
         "target": "+50%於30交易日內 / +30%於20交易日內的快速爆發",
         "feature_count": 17,
     }]).to_csv(DATA_DIR / "ignition_v2_selected_config.csv", index=False, encoding="utf-8-sig")
+
+    discovery_candidates.to_csv(DATA_DIR / "discovery_v1_candidates.csv", index=False, encoding="utf-8-sig")
+    discovery_eval.to_csv(DATA_DIR / "discovery_v1_evaluation.csv", index=False, encoding="utf-8-sig")
+    discovery_combo.to_csv(DATA_DIR / "discovery_v1_primary_plus_discovery.csv", index=False, encoding="utf-8-sig")
+    discovery_samples.to_csv(DATA_DIR / "discovery_v1_samples.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([{
+        "selected_config": discovery_selected,
+        "selection_rule": "只用2025前開發期挑Discovery設定；2025起OOS只驗證",
+        "candidate_pool": "S2_D_SECOND Top50之外",
+        "purpose": "額外找出被主排名漏掉、但具有潛伏爆發特徵的股票",
+    }]).to_csv(DATA_DIR / "discovery_v1_selected_config.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(DATA_DIR / "walkforward_summary.csv", index=False, encoding="utf-8-sig")
     exit_trades.to_csv(DATA_DIR / "walkforward_exit_trades.csv", index=False, encoding="utf-8-sig")
     exit_summary.to_csv(DATA_DIR / "walkforward_exit_summary.csv", index=False, encoding="utf-8-sig")
@@ -806,6 +830,11 @@ def main():
         "Ignition V2特徵": "波動加速度/量能加速度/區間壓縮/BB寬度變化/均線斜率/RSI與MACD加速度/前高距離",
         "Ignition V2挑選原則": "只用2025前開發期挑融合權重；2025起OOS只驗證",
         "Ignition V2選定設定": ignition_v2_selected,
+        "Discovery V1版本": "DISC-1.0",
+        "Discovery V1候選池": "S2_D_SECOND Top50之外",
+        "Discovery V1用途": "第二名單，專門找主排名漏掉的潛伏爆發候選，不取代S2主榜",
+        "Discovery V1挑選原則": "只用2025前開發期挑設定；2025起OOS只驗證",
+        "Discovery V1選定設定": discovery_selected,
         "注意": "這是核心價格型態模型驗證，不包含完整歷史法人/基本面因子；不得與完整 live 主模型績效混為一談。",
     }])
     metadata.to_csv(DATA_DIR / "walkforward_metadata.csv", index=False, encoding="utf-8-sig")
@@ -853,6 +882,15 @@ def main():
     print(ignition_v2_recovery.to_string(index=False))
     print("\n✅ Ignition V2 feature diagnostics")
     print(ignition_v2_features.to_string(index=False))
+    print("\n✅ Discovery V1 candidates")
+    print(discovery_candidates.to_string(index=False))
+    print(f"\n✅ Selected Discovery V1 config: {discovery_selected}")
+    print("\n✅ Discovery V1 evaluation")
+    print(discovery_eval.to_string(index=False))
+    print("\n✅ Primary + Discovery comparison")
+    print(discovery_combo.to_string(index=False))
+    print("\n✅ Discovery sample diagnostics")
+    print(discovery_samples.to_string(index=False))
 
 
 if __name__ == "__main__":
