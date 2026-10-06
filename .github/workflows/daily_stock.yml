@@ -42,12 +42,14 @@ jobs:
         env:
           TZ: Asia/Taipei
         run: |
-          FORCE_ARG=""
+          CHECK_ARGS=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_run }}" = "true" ]; then
-            FORCE_ARG="--force"
+            CHECK_ARGS="--force"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            CHECK_ARGS="--scheduled"
           fi
 
-          OUTPUT="$(python market_open_check.py $FORCE_ARG)"
+          OUTPUT="$(python market_open_check.py $CHECK_ARGS)"
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "market_open=true"; then
