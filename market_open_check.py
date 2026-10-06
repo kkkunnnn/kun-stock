@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -59,27 +59,38 @@ def latest_twse_trade_date():
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--force", action="store_true")
+    p.add_argument("--scheduled", action="store_true")
     args = p.parse_args()
 
-    today = datetime.now(ZoneInfo("Asia/Taipei")).date()
+    now_tw = datetime.now(ZoneInfo("Asia/Taipei"))
+    today = now_tw.date()
 
     if args.force:
         print(f"FORCE_RUN=1; bypass market-day check for {today}")
         print("market_open=true")
         return 0
 
-    latest = latest_twse_trade_date()
-    is_open = latest == today
+    # GitHub Actions scheduled jobs can start hours late. The nominal schedule is
+    # 21:00 Asia/Taipei. If a scheduled job finally starts after midnight but
+    # before the next 21:00, it still belongs to the previous trading session.
+    if args.scheduled and now_tw.hour < 21:
+        target_date = today - timedelta(days=1)
+    else:
+        target_date = today
 
-    print(f"Taiwan today: {today}")
+    latest = latest_twse_trade_date()
+    is_open = latest == target_date
+
+    print(f"Taiwan now: {now_tw.isoformat(timespec='seconds')}")
+    print(f"Target trading session: {target_date}")
     print(f"TWSE latest trade date: {latest}")
 
     if is_open:
         print("market_open=true")
-        print("✅ 今日有台股成交資料，執行完整選股。")
+        print("✅ 目標交易日已有台股成交資料，執行完整選股。")
     else:
         print("market_open=false")
-        print("⏭️ 今日不是台股交易日，略過模型與資料更新。")
+        print("⏭️ 目標日期不是台股交易日，略過模型與資料更新。")
 
     return 0
 
