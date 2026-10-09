@@ -1779,6 +1779,10 @@ def main() -> None:
         weekly_result.head(20).to_csv(top20_path, index=False, encoding="utf-8-sig")
         print(f"✅ 已更新 {top20_path.relative_to(ROOT)}")
 
+        top10_3d_path = DATA_DIR / "limitup_3d_top10.csv"
+        weekly_result.head(10).to_csv(top10_3d_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新今日3日漲停啟動 Top10：{top10_3d_path.relative_to(ROOT)}")
+
     # 原 Notebook 輸出照常保留
     shutil.move(str(excel_src), str(excel_dst))
     shutil.move(str(history_src), str(history_dst))
