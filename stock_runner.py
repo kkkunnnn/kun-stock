@@ -10,12 +10,13 @@ import pandas as pd
 import numpy as np
 
 from selection_model_v2 import add_selection_v2_components
+from limitup_3d_model import apply_limitup_3d_model, MODEL_VERSION as LIMITUP_MODEL_VERSION, MODEL_TARGET as LIMITUP_MODEL_TARGET
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-MODEL_VERSION = "P50-LIVE-S2.0"
-MODEL_TARGET = "40交易日內最高報酬達+50%"
-LIVE_S2_CONFIG = "S2_E_BALANCED"
+MODEL_VERSION = LIMITUP_MODEL_VERSION
+MODEL_TARGET = LIMITUP_MODEL_TARGET
+LIVE_S2_CONFIG = "S2_E_BALANCED"  # 保留作舊模型研究層，新主排名由 LIMITUP-3D-V1 接管
 NOTEBOOK_PATH = ROOT / "股市V1-V5.ipynb"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1717,7 +1718,7 @@ def main() -> None:
             "台股環境判定": "資料不足",
         }])
 
-    # 主模型：40交易日 +50% 目標 + 進場時機
+    # 舊 S2/40日模型保留作研究與輔助欄位；正式每日主排名改為未來3交易日漲停啟動模型。
     result = namespace.get("結果")
     weekly_result = pd.DataFrame()
 
@@ -1737,8 +1738,8 @@ def main() -> None:
         metadata = pd.DataFrame([{
             "模型版本": MODEL_VERSION,
             "模型目標": MODEL_TARGET,
-            "正式選股模型": LIVE_S2_CONFIG,
-            "正式選股權重": "Base45% + General25% + Ignition15% + SecondLeg15%",
+            "正式選股模型": MODEL_VERSION,
+            "正式選股權重": "3日量價啟動70% + 當日橫斷面PR30%；舊S2保留作研究欄位",
             "歷史流動性定義": "volume >= 1,000,000 shares（1,000張）",
             "資料基準日": latest_trade_date.strftime("%Y-%m-%d"),
             "歷史視窗日數": 420,
@@ -1755,15 +1756,20 @@ def main() -> None:
         print(f"✅ 已更新模型 metadata：{MODEL_VERSION}")
 
     if isinstance(result, pd.DataFrame) and not result.empty:
+        history_for_live = namespace.get("歷史資料", pd.DataFrame())
         weekly_result = build_one_week_model(
             result,
-            namespace.get("歷史資料", pd.DataFrame()),
+            history_for_live,
             namespace.get("法人資料", pd.DataFrame()),
             global_df,
             global_summary,
             domestic_summary,
             pattern_scores,
         )
+
+        # LIMITUP-3D-V1 最後接管正式排序；每天使用最新歷史行情重新計算。
+        weekly_result = apply_limitup_3d_model(weekly_result, history_for_live)
+        print("✅ LIMITUP-3D-V1 已接管每日主排名（未來3交易日漲停啟動）")
 
         weekly_path = DATA_DIR / "weekly_model_latest.csv"
         weekly_result.to_csv(weekly_path, index=False, encoding="utf-8-sig")
@@ -1772,6 +1778,10 @@ def main() -> None:
         top20_path = DATA_DIR / "weekly_top20.csv"
         weekly_result.head(20).to_csv(top20_path, index=False, encoding="utf-8-sig")
         print(f"✅ 已更新 {top20_path.relative_to(ROOT)}")
+
+        top10_3d_path = DATA_DIR / "limitup_3d_top10.csv"
+        weekly_result.head(10).to_csv(top10_3d_path, index=False, encoding="utf-8-sig")
+        print(f"✅ 已更新今日3日漲停啟動 Top10：{top10_3d_path.relative_to(ROOT)}")
 
     # 原 Notebook 輸出照常保留
     shutil.move(str(excel_src), str(excel_dst))
@@ -1826,10 +1836,14 @@ def main() -> None:
             "股票代號", "股票名稱", "市場", "產業別",
             "排名", "最終分數", "綜合PR", "候選等級", "目前狀態",
             "技術分數", "籌碼標準分", "基本面分數", "風險動能分數",
-            "一週模型排名", "主模型排名", "起漲潛力排名", "波段爆發排名",
+            "一週模型排名", "主模型排名", "3日漲停啟動排名", "起漲潛力排名", "波段爆發排名",
             "一週起漲分數", "波段爆發分數", "50%歷史型態命中率", "50%歷史型態PR",
             "相似樣本40日最高報酬均值", "突破強度分數", "動能持續分數", "活躍爆發分數",
-            "波動爆發潛力", "舊主模型分數", "S2主模型分數",
+            "波動爆發潛力", "3日漲停啟動分數", "3日漲停啟動PR", "3日漲停啟動判定",
+            "3日啟動理由", "3日啟動風險", "3D_ret1", "3D_ret3", "3D_ret5",
+            "3D_volume_ratio", "3D_volume_5v20", "3D_breakout20", "3D_bias20",
+            "3D_close_pos", "3D_atr_accel", "3D_vol_compression", "3D_rsi14",
+            "舊40日主模型分數", "舊主模型分數", "S2主模型分數",
             "S2 Base PR", "S2 General PR", "S2 Ignition PR", "S2 SecondLeg PR",
             "正式模型版本", "主模型分數", "50%潛力判定", "進場時機分數",
             "技術啟動分數", "籌碼動能分數", "基本品質分數", "價格動能分數",

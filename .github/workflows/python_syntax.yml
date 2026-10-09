@@ -1,0 +1,19 @@
+name: Python Syntax Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - v2-3day-limitup
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile Python files
+        run: python -m py_compile app.py stock_runner.py limitup_3d_model.py

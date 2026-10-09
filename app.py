@@ -2790,39 +2790,41 @@ elif page == "專業驗證":
             )
 
 elif page == "一週模型":
-    st.markdown("## 1～2 個月波段爆發＋進場時機模型")
-    st.caption("這是目前的主模型：目標不是短線小幅上漲，而是篩選 1～2 個月內具大波段、甚至挑戰 +50% 潛力的個股；短期啟動訊號只負責判斷何時進場。")
+    st.markdown("## 🚀 3 個交易日漲停啟動雷達")
+    st.caption("正式主模型已改為短線啟動偵測：每天以最新量價、突破位置、均線結構、K棒收盤位置、波動壓縮/擴張與過熱風險重新排序全市場，尋找未來 3 個交易日最可能進入漲停攻擊段的標的。分數是相對訊號強度，不是保證漲停的機率。")
 
     if "一週模型排名" not in rank.columns or rank["一週模型排名"].isna().all():
         st.info("尚未產生一週模型資料。請手動跑一次 GitHub Actions。")
     else:
         a,b,c,d=st.columns(4)
-        a.metric("V1-B 技術啟動權重","40%")
-        b.metric("V2-B 籌碼動能權重","30%")
-        c.metric("V3-B 基本品質權重","15%")
-        d.metric("V4-B 價格動能權重","15%")
+        a.metric("正式模型","LIMITUP-3D-V1")
+        b.metric("預測視窗","3 個交易日")
+        c.metric("量價/技術原始分","70%")
+        d.metric("全市場相對PR","30%")
 
         f1,f2,f3=st.columns(3)
         stages=sorted(rank["啟動階段"].dropna().astype(str).unique()) if "啟動階段" in rank.columns else []
         entries=sorted(rank["進場判定"].dropna().astype(str).unique()) if "進場判定" in rank.columns else []
         selected_stages=f1.multiselect("啟動階段",stages)
         selected_entries=f2.multiselect("進場判定",entries)
-        min_week=f3.slider("最低一週起漲分數",0,100,0)
+        min_week=f3.slider("最低3日漲停啟動分數",0,100,0)
 
         d=rank.copy()
         if selected_stages:
             d=d[d["啟動階段"].isin(selected_stages)]
         if selected_entries:
             d=d[d["進場判定"].isin(selected_entries)]
-        if "一週起漲分數" in d.columns:
-            d=d[pd.to_numeric(d["一週起漲分數"],errors="coerce").fillna(-1)>=min_week]
+        score_filter_col = "3日漲停啟動分數" if "3日漲停啟動分數" in d.columns else "一週起漲分數"
+        if score_filter_col in d.columns:
+            d=d[pd.to_numeric(d[score_filter_col],errors="coerce").fillna(-1)>=min_week]
         d=d.sort_values("一週模型排名")
 
         cols=[c for c in [
             "主模型排名","股票代號","股票名稱","產業別",
-            "主模型分數","波段爆發分數","50%潛力判定","50%歷史型態命中率","50%歷史型態PR",
-            "相似樣本40日最高報酬均值","突破強度分數","動能持續分數","活躍爆發分數",
-            "一週起漲分數","進場時機分數","啟動階段","進場判定",
+            "3日漲停啟動分數","3日漲停啟動PR","3日漲停啟動判定",
+            "3D_volume_ratio","3D_volume_5v20","3D_breakout20","3D_ret1","3D_ret3","3D_ret5",
+            "3D_close_pos","3D_atr_accel","3D_vol_compression","3D_rsi14",
+            "進場時機分數","啟動階段","進場判定",
             "技術啟動分數","籌碼動能分數","基本品質分數","價格動能分數",
             "風險扣分","台股環境分數","全球環境分數","產業海外順風分數",
             "起漲原因","進場風險","最終分數"
@@ -3189,30 +3191,30 @@ elif page == "個股分析":
     st.markdown(f"## {code}　{name}"); st.caption(f"{row.get('市場','—')} ｜ {row.get('產業別','—')} ｜ {row.get('財報類型','—')}")
 
     if pd.notna(row.get("一週模型排名", np.nan)):
-        st.markdown("### 波段評分總覽")
+        st.markdown("### 3日漲停啟動評分總覽")
         a,b,c,d=st.columns(4)
-        a.metric("全市場 S2 排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
-        b.metric("S2 波段分數",fmt(row.get("主模型分數"),1))
-        c.metric("操作型波段條件",fmt(row.get("波段爆發分數"),1))
+        a.metric("3日啟動全市場排名",fmt(row.get("主模型排名",row.get("一週模型排名")),0))
+        b.metric("3日漲停啟動分數",fmt(row.get("3日漲停啟動分數",row.get("主模型分數")),1))
+        c.metric("全市場相對PR",fmt(row.get("3日漲停啟動PR"),1))
         d.metric("進場時機",fmt(row.get("進場時機分數"),1))
 
         st.markdown(
-            f'<div class="ks-note"><b>{row.get("50%潛力判定","—")}</b>　｜　'
+            f'<div class="ks-note"><b>{row.get("3日漲停啟動判定",row.get("50%潛力判定","—"))}</b>　｜　'
             f'啟動階段：{row.get("啟動階段","—")}　｜　進場判定：{row.get("進場判定","—")}</div>',
             unsafe_allow_html=True,
         )
 
         s21,s22,s23,s24=st.columns(4)
-        s21.metric("歷史型態 Base",fmt(row.get("S2 Base PR"),0))
-        s22.metric("一般爆發 General",fmt(row.get("S2 General PR"),0))
-        s23.metric("啟動 Ignition",fmt(row.get("S2 Ignition PR"),0))
-        s24.metric("第二段 Second-Leg",fmt(row.get("S2 SecondLeg PR"),0))
+        s21.metric("今日量比",fmt(row.get("3D_volume_ratio"),2,"x"))
+        s22.metric("距20日突破位",fmt(row.get("3D_breakout20"),2,"%"))
+        s23.metric("近3日漲幅",fmt(row.get("3D_ret3"),2,"%"))
+        s24.metric("RSI14",fmt(row.get("3D_rsi14"),1))
 
         c1,c2=st.columns(2)
         with c1:
-            st.info(f"模型看多理由：{row.get('起漲原因','—')}")
+            st.info(f"3日啟動理由：{row.get('3日啟動理由',row.get('起漲原因','—'))}")
         with c2:
-            risk_text=str(row.get("進場風險","—"))
+            risk_text=str(row.get("3日啟動風險",row.get("進場風險","—")))
             if risk_text=="無明顯風險訊號":
                 st.success(f"主要風險：{risk_text}")
             else:
@@ -3235,7 +3237,7 @@ elif page == "個股分析":
             g1.metric("台股環境",fmt(row.get("台股環境分數"),1))
             g2.metric("全球環境",fmt(row.get("全球環境分數"),1))
             g3.metric("產業海外順風",fmt(row.get("產業海外順風分數"),1))
-            st.caption("S2_E_BALANCED：Base 45% + General 25% + Ignition 15% + Second-Leg 15%。歷史相似型態命中率是歷史樣本統計，不是未來報酬機率。")
+            st.caption("LIMITUP-3D-V1：以當日收盤後可取得的量價與技術結構重新排名。3日漲停啟動分數是相對訊號強度，不是校準後的漲停機率，也不代表保證報酬。舊 S2/40日資料仍保留作研究比較。")
     else:
         st.info("這檔目前還沒有一週模型資料，請先跑一次 GitHub Actions。")
 

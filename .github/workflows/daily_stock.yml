@@ -9,8 +9,8 @@ on:
         default: false
         type: boolean
   schedule:
-    # 台灣時間週一到週五 21:00（UTC 13:00）
-    - cron: "0 13 * * 1-5"
+    # 台灣時間週一到週五 17:00（UTC 09:00），收盤資料較完整後重跑每日排名
+    - cron: "0 9 * * 1-5"
 
 permissions:
   contents: write
@@ -63,7 +63,7 @@ jobs:
         run: |
           echo "今日台股休市，略過選股、模型計算與資料寫入。"
 
-      - name: Run V1-V5 screener
+      - name: Run daily 3-day limit-up screener
         if: steps.market_day.outputs.market_open == 'true'
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
