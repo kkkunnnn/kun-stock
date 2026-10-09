@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 TWSE_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+TWSE_HOLIDAY_URL = "https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule"
 
 
 def parse_date(value: str):
@@ -28,6 +29,23 @@ def parse_date(value: str):
             tzinfo=ZoneInfo("Asia/Taipei"),
         ).date()
     return None
+
+
+def official_market_open_for_date(target_date):
+    if target_date.weekday() >= 5:
+        return False, "weekend"
+    headers = {"User-Agent":"Mozilla/5.0","Accept":"application/json,text/plain,*/*"}
+    r = requests.get(TWSE_HOLIDAY_URL, headers=headers, timeout=20)
+    r.raise_for_status()
+    rows = r.json()
+    roc = f"{target_date.year - 1911:03d}{target_date.month:02d}{target_date.day:02d}"
+    matches = [x for x in rows if str(x.get("Date","")).strip() == roc]
+    if not matches:
+        return True, "regular weekday"
+    desc = " ".join(f"{x.get('Name','')} {x.get('Description','')}" for x in matches)
+    if "開始交易" in desc or "最後交易" in desc:
+        return True, desc
+    return False, desc or "official holiday"
 
 
 def latest_twse_trade_date():
@@ -78,19 +96,28 @@ def main():
     else:
         target_date = today
 
-    latest = latest_twse_trade_date()
-    is_open = latest == target_date
+    try:
+        is_open, reason = official_market_open_for_date(target_date)
+    except Exception as e:
+        is_open, reason = True, f"holiday calendar unavailable: {e}"
 
     print(f"Taiwan now: {now_tw.isoformat(timespec='seconds')}")
     print(f"Target trading session: {target_date}")
-    print(f"TWSE latest trade date: {latest}")
+    print(f"TWSE calendar: {'OPEN' if is_open else 'CLOSED'}")
+    print(f"TWSE calendar reason: {reason}")
+
+    try:
+        latest = latest_twse_trade_date()
+        print(f"TWSE latest trade date (diagnostic only): {latest}")
+    except Exception as e:
+        print(f"TWSE latest trade date unavailable: {e}")
 
     if is_open:
         print("market_open=true")
-        print("✅ 目標交易日已有台股成交資料，執行完整選股。")
+        print("✅ 依官方開休市日曆執行完整選股。")
     else:
         print("market_open=false")
-        print("⏭️ 目標日期不是台股交易日，略過模型與資料更新。")
+        print("⏭️ 依官方開休市日曆略過模型與資料更新。")
 
     return 0
 
